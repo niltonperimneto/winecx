@@ -1,0 +1,75 @@
+name: Check CodeWeavers Crossover updates
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Every day at midnight UTC
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Check for new version
+        id: check
+        run: |
+          LATEST_TARBALL_URL=$(curl -s https://www.codeweavers.com/crossover/source | grep -Eo 'https://media.codeweavers.com/pub/crossover/source/crossover-sources-[0-9.]*\.tar\.gz' | head -n 1)
+          if [ -z "$LATEST_TARBALL_URL" ]; then
+            echo "Could not find tarball URL."
+            exit 1
+          fi
+          # Extract version like 26.3.0
+          LATEST_VERSION=$(echo "$LATEST_TARBALL_URL" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')
+          echo "Found latest version: ${LATEST_VERSION}"
+          echo "version=${LATEST_VERSION}" >> $GITHUB_OUTPUT
+          echo "url=${LATEST_TARBALL_URL}" >> $GITHUB_OUTPUT
+          
+          # Check if tag exists
+          if git rev-parse "v${LATEST_VERSION}" >/dev/null 2>&1; then
+            echo "Version v${LATEST_VERSION} already exists. Skipping."
+            echo "is_new=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version detected!"
+            echo "is_new=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and prepare new version
+        if: steps.check.outputs.is_new == 'true'
+        run: |
+          wget -qO crossover.tar.gz "${{ steps.check.outputs.url }}"
+          mkdir extracted
+          tar -xzf crossover.tar.gz -C extracted
+          
+          # Find the wine directory
+          WINE_DIR=$(find extracted -type d -name "wine" | head -n 1)
+          if [ -z "$WINE_DIR" ]; then
+            echo "Could not find wine directory inside the tarball."
+            exit 1
+          fi
+          
+          # Delete all files except .git and .github to prepare for fresh sync
+          find . -maxdepth 1 ! -name '.' ! -name '..' ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          
+          # Move new wine files
+          # Using rsync to handle everything cleanly, including hidden files
+          rsync -a "$WINE_DIR/" .
+          
+          # Cleanup
+          rm -rf extracted crossover.tar.gz
+
+      - name: Commit and push new version
+        if: steps.check.outputs.is_new == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update to Crossover version ${{ steps.check.outputs.version }}"
+          git tag "v${{ steps.check.outputs.version }}"
+          git push origin main
+          git push origin "v${{ steps.check.outputs.version }}"
