@@ -51,6 +51,7 @@ SOURCES = \
 	time.c \
 	unix/alpc.c \
 	unix/cdrom.c \
+	unix/child_policy.c \
 	unix/debug.c \
 	unix/env.c \
 	unix/file.c \
