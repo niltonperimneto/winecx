@@ -46,7 +46,10 @@ struct json_cursor
 
 struct policy_match
 {
-    BOOL identity_match;
+    unsigned int match_rank;
+    const char *match_kind;
+    char *policy_id;
+    char *backend;
     BOOL game_mode;
     BOOL has_game_mode;
     char **keys;
@@ -202,12 +205,34 @@ static BOOL parse_bool( struct json_cursor *cursor, BOOL *value )
 
 static void normalize_identity( char *value )
 {
-    char *ptr;
+    char *ptr, *src, *dst;
     for (ptr = value; *ptr; ptr++)
     {
         if (*ptr == '\\') *ptr = '/';
         else *ptr = tolower( (unsigned char)*ptr );
     }
+
+    src = value;
+    if (!strncmp( src, "//??/", 5 )) src += 5;
+    dst = value;
+    if (isalpha( (unsigned char)src[0] ) && src[1] == ':' && src[2] == '/')
+    {
+        *dst++ = '/';
+        if (src[0] != 'z')
+        {
+            memcpy( dst, "drive_", 6 );
+            dst += 6;
+            *dst++ = src[0];
+        }
+        src += 2;
+    }
+    while (*src)
+    {
+        if (*src == '/' && dst > value && dst[-1] == '/') { src++; continue; }
+        *dst++ = *src++;
+    }
+    while (dst > value + 1 && dst[-1] == '/') dst--;
+    *dst = 0;
 }
 
 static const char *base_name( const char *path )
@@ -216,6 +241,20 @@ static const char *base_name( const char *path )
     const char *backslash = strrchr( path, '\\' );
     if (!slash || (backslash && backslash > slash)) slash = backslash;
     return slash ? slash + 1 : path;
+}
+
+static BOOL weak_name_is_excluded( const char *name )
+{
+    static const char * const excluded[] =
+    {
+        "steam.exe", "steamservice.exe", "steamwebhelper.exe", "gameoverlayui.exe",
+        "crashreporter.exe", "crashpad_handler.exe", "unitycrashhandler64.exe",
+        "unins000.exe", "setup.exe", "install.exe", "vc_redist.x64.exe",
+        "vc_redist.x86.exe", "dxsetup.exe", "eac_launcher.exe", "easyanticheat.exe"
+    };
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(excluded); i++) if (!strcmp( name, excluded[i] )) return TRUE;
+    return FALSE;
 }
 
 static BOOL string_array_matches( struct json_cursor *cursor, const char *image_path, BOOL basename_only )
@@ -235,6 +274,71 @@ static BOOL string_array_matches( struct json_cursor *cursor, const char *image_
         if (consume( cursor, ']' )) return matched;
         if (!consume( cursor, ',' )) return FALSE;
     }
+}
+
+static BOOL string_array_contains_path( struct json_cursor *cursor, const char *image_path )
+{
+    BOOL matched = FALSE;
+    char *expected;
+    size_t len;
+
+    if (!consume( cursor, '[' )) return FALSE;
+    if (consume( cursor, ']' )) return FALSE;
+    for (;;)
+    {
+        expected = parse_string( cursor );
+        if (!expected) return FALSE;
+        normalize_identity( expected );
+        len = strlen( expected );
+        if (len && !strncmp( expected, image_path, len ) && (image_path[len] == '/' || !image_path[len])) matched = TRUE;
+        free( expected );
+        if (consume( cursor, ']' )) return matched;
+        if (!consume( cursor, ',' )) return FALSE;
+    }
+}
+
+static BOOL buffer_contains_ascii_ci( const char *buffer, size_t size, const char *needle )
+{
+    size_t i, j, length = strlen( needle );
+    if (length > size) return FALSE;
+    for (i = 0; i <= size - length; i++)
+    {
+        for (j = 0; j < length; j++)
+            if (tolower( (unsigned char)buffer[i + j] ) != needle[j]) break;
+        if (j == length) return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL image_uses_graphics_api( const char *image_path )
+{
+    static const char * const imports[] =
+    {
+        "d3d11.dll", "dxgi.dll", "d3d12.dll", "d3d12core.dll", "vulkan-1.dll"
+    };
+    const char *prefix = getenv( "WINEPREFIX" );
+    char *unix_path = NULL, buffer[65536 + 32];
+    ssize_t count;
+    size_t carry = 0, i;
+    int fd;
+
+    if (!strncmp( image_path, "/drive_c/", 9 ) && prefix)
+        asprintf( &unix_path, "%s%s", prefix, image_path );
+    else if (image_path[0] == '/') unix_path = strdup( image_path );
+    if (!unix_path) return FALSE;
+    if ((fd = open( unix_path, O_RDONLY | O_CLOEXEC )) == -1) { free( unix_path ); return FALSE; }
+    free( unix_path );
+
+    while ((count = read( fd, buffer + carry, sizeof(buffer) - carry )) > 0)
+    {
+        size_t available = carry + count;
+        for (i = 0; i < ARRAY_SIZE(imports); i++)
+            if (buffer_contains_ascii_ci( buffer, available, imports[i] )) { close( fd ); return TRUE; }
+        carry = min( available, (size_t)31 );
+        memmove( buffer, buffer + available - carry, carry );
+    }
+    close( fd );
+    return FALSE;
 }
 
 static BOOL environment_key_allowed( const char *key )
@@ -328,6 +432,8 @@ static void free_match( struct policy_match *match )
     }
     free( match->keys );
     free( match->values );
+    free( match->policy_id );
+    free( match->backend );
     memset( match, 0, sizeof(*match) );
 }
 
@@ -336,6 +442,7 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
 {
     char *key;
     unsigned int policy_app_id;
+    BOOL path_match = FALSE, name_match = FALSE, app_id_match = FALSE, install_root_match = FALSE;
 
     if (!consume( cursor, '{' )) return FALSE;
     if (consume( cursor, '}' )) return TRUE;
@@ -347,17 +454,33 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
             free( key );
             return FALSE;
         }
-        if (!strcmp( key, "steamAppID" ) && parse_uint( cursor, &policy_app_id ))
+        if (!strcmp( key, "id" ))
         {
-            if (steam_app_id && policy_app_id == steam_app_id) match->identity_match = TRUE;
+            free( match->policy_id );
+            match->policy_id = parse_string( cursor );
+            if (!match->policy_id) { free( key ); return FALSE; }
+        }
+        else if (!strcmp( key, "backend" ))
+        {
+            free( match->backend );
+            match->backend = parse_string( cursor );
+            if (!match->backend) { free( key ); return FALSE; }
+        }
+        else if (!strcmp( key, "steamAppID" ) && parse_uint( cursor, &policy_app_id ))
+        {
+            if (steam_app_id && policy_app_id == steam_app_id) app_id_match = TRUE;
         }
         else if (!strcmp( key, "executablePaths" ))
         {
-            if (string_array_matches( cursor, image_path, FALSE )) match->identity_match = TRUE;
+            path_match = string_array_matches( cursor, image_path, FALSE );
         }
         else if (!strcmp( key, "executableNames" ))
         {
-            if (string_array_matches( cursor, image_path, TRUE )) match->identity_match = TRUE;
+            name_match = string_array_matches( cursor, image_path, TRUE );
+        }
+        else if (!strcmp( key, "installRoots" ))
+        {
+            install_root_match = string_array_contains_path( cursor, image_path );
         }
         else if (!strcmp( key, "environment" ))
         {
@@ -374,9 +497,31 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
             return FALSE;
         }
         free( key );
-        if (consume( cursor, '}' )) return TRUE;
+        if (consume( cursor, '}' )) break;
         if (!consume( cursor, ',' )) return FALSE;
     }
+
+    if (app_id_match)
+    {
+        match->match_rank = 4;
+        match->match_kind = "steam-app-id";
+    }
+    else if (path_match)
+    {
+        match->match_rank = 3;
+        match->match_kind = "executable-path";
+    }
+    else if (name_match && !weak_name_is_excluded( base_name( image_path ) ))
+    {
+        match->match_rank = 2;
+        match->match_kind = "executable-name";
+    }
+    else if (install_root_match && !weak_name_is_excluded( base_name( image_path ) ) && image_uses_graphics_api( image_path ))
+    {
+        match->match_rank = 1;
+        match->match_kind = "graphics-descendant";
+    }
+    return TRUE;
 }
 
 static BOOL find_matching_policy( const char *data, size_t size, const char *image_path,
@@ -408,18 +553,23 @@ static BOOL find_matching_policy( const char *data, size_t size, const char *ima
                     free_match( &candidate );
                     return FALSE;
                 }
-                if (candidate.identity_match)
+                if (candidate.match_rank)
                 {
-                    if (result->identity_match)
+                    if (candidate.match_rank > result->match_rank)
                     {
-                        WARN( "ambiguous Whisky child policy for %s; ignoring\n", debugstr_a(image_path) );
+                        free_match( result );
+                        *result = candidate;
+                        memset( &candidate, 0, sizeof(candidate) );
+                    }
+                    else if (candidate.match_rank == result->match_rank)
+                    {
+                        WARN( "WHISKY_CHILD_POLICY result=ambiguous image=%s rank=%u\n",
+                              debugstr_a(image_path), candidate.match_rank );
                         free( key );
                         free_match( &candidate );
                         free_match( result );
                         return FALSE;
                     }
-                    *result = candidate;
-                    memset( &candidate, 0, sizeof(candidate) );
                 }
                 if (consume( &cursor, ']' )) break;
                 if (!consume( &cursor, ',' )) { free( key ); free_match( &candidate ); return FALSE; }
@@ -441,7 +591,7 @@ static BOOL find_matching_policy( const char *data, size_t size, const char *ima
         free_match( result );
         return FALSE;
     }
-    return result->identity_match;
+    return !!result->match_rank;
 }
 
 static char *read_policy_file( const char *path, size_t *size )
@@ -491,8 +641,10 @@ void whisky_apply_child_launch_policy( const char *image_path, const WCHAR *envi
     if (find_matching_policy( data, size, normalized_image, environment, &match ))
     {
         for (i = 0; i < match.env_count; i++) setenv( match.keys[i], match.values[i], 1 );
-        TRACE( "applied Whisky child policy to %s%s\n", debugstr_a(image_path),
-               match.has_game_mode && match.game_mode ? " (Game Mode requested)" : "" );
+        WARN( "WHISKY_CHILD_POLICY result=environment-applied policy=%s match=%s image=%s backend=%s game-mode=%s\n",
+              debugstr_a(match.policy_id ? match.policy_id : "unknown"), match.match_kind,
+              debugstr_a(normalized_image), match.backend ? match.backend : "unknown",
+              match.has_game_mode ? (match.game_mode ? "true" : "false") : "inherit" );
     }
 
     free_match( &match );
