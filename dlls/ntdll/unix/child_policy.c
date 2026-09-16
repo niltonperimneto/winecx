@@ -641,6 +641,8 @@ void whisky_apply_child_launch_policy( const char *image_path, const WCHAR *envi
     if (find_matching_policy( data, size, normalized_image, environment, &match ))
     {
         for (i = 0; i < match.env_count; i++) setenv( match.keys[i], match.values[i], 1 );
+        if (match.has_game_mode && match.game_mode) setenv( "WHISKY_GAME_MODE_REQUESTED", "1", 1 );
+        else unsetenv( "WHISKY_GAME_MODE_REQUESTED" );
         WARN( "WHISKY_CHILD_POLICY result=environment-applied policy=%s match=%s image=%s backend=%s game-mode=%s\n",
               debugstr_a(match.policy_id ? match.policy_id : "unknown"), match.match_kind,
               debugstr_a(normalized_image), match.backend ? match.backend : "unknown",
