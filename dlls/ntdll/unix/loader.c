@@ -651,6 +651,37 @@ static void replace_wineloader_path_with_link(char **wineloader_path, const char
 #endif
 
 
+static void game_mode_host_exec( char **argv )
+{
+#ifdef __APPLE__
+    const char *configured = getenv( "WHISKY_GAME_MODE_HOST" );
+    const char *slash;
+    char *derived = NULL, **host_argv;
+    unsigned int argc, i;
+
+    if (!getenv( "WHISKY_GAME_MODE_REQUESTED" ) || getenv( "WHISKY_GAME_MODE_HOST_ACTIVE" )) return;
+    if (!configured || !*configured)
+    {
+        if (!(slash = strrchr( argv[0], '/' ))) return;
+        if (asprintf( &derived, "%.*s/../libexec/GameModeProcessHost.app/Contents/MacOS/GameModeProcessHost",
+                      (int)(slash - argv[0]), argv[0] ) == -1) return;
+        configured = derived;
+    }
+    if (access( configured, X_OK )) { free( derived ); return; }
+
+    for (argc = 0; argv[argc]; argc++);
+    if (!(host_argv = malloc( (argc + 2) * sizeof(*host_argv) ))) { free( derived ); return; }
+    host_argv[0] = (char *)configured;
+    for (i = 0; i <= argc; i++) host_argv[i + 1] = argv[i];
+    setenv( "WHISKY_GAME_MODE_HOST_ACTIVE", "1", 1 );
+    execv( configured, host_argv );
+    unsetenv( "WHISKY_GAME_MODE_HOST_ACTIVE" );
+    WARN( "WHISKY_CHILD_POLICY result=host-failed error=%d\n", errno );
+    free( host_argv );
+    free( derived );
+#endif
+}
+
 static void preloader_exec( char **argv, const char *image_path )
 {
 #ifdef HAVE_WINE_PRELOADER
@@ -662,6 +693,8 @@ static void preloader_exec( char **argv, const char *image_path )
         /* CW HACK 22144: Create and exec a more descriptively-named link to the preloader,
          * which will show up as the icon name in the Dock. */
         replace_wineloader_path_with_link( &(argv[0]), image_path );
+
+        game_mode_host_exec( argv );
 
         posix_spawnattr_init( &attr );
         posix_spawnattr_setflags( &attr, POSIX_SPAWN_SETEXEC | _POSIX_SPAWN_DISABLE_ASLR );
@@ -683,6 +716,7 @@ static void preloader_exec( char **argv, const char *image_path )
         replace_wineloader_path_with_link( &(argv[1]), image_path );
 #endif
 
+    game_mode_host_exec( argv + 1 );
     execv( argv[1], argv + 1 );
 }
 

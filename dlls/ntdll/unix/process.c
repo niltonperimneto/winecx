@@ -933,6 +933,7 @@ static NTSTATUS spawn_process( const RTL_USER_PROCESS_PARAMETERS *params, int so
                 }
             }
 
+            whisky_apply_child_launch_policy( image_path_name_a, params->Environment );
             exec_wineloader( argv, socketfd, pe_info, image_path_name_a );
             _exit(1);
         }
