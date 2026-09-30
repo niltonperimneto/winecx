@@ -51,8 +51,6 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(mountmgr);
 
-static struct run_loop_params run_loop_params;
-
 NTSTATUS errno_to_status( int err )
 {
     TRACE( "errno = %d\n", err );
@@ -859,6 +857,65 @@ static NTSTATUS wow64_check_device_access(void *args)
     return check_device_access(ULongToPtr(params32->unix_device));
 }
 
+static NTSTATUS wow64_cdrom_open(void *args)
+{
+    struct
+    {
+        PTR32 unix_device;
+        PTR32 cdrom;
+    } *params32 = args;
+    struct cdrom_open_params params =
+    {
+        ULongToPtr(params32->unix_device),
+    };
+    NTSTATUS status = cdrom_open(&params);
+    if (!status)
+    {
+        PTR32 *cdrom32 = ULongToPtr(params32->cdrom);
+        *cdrom32 = (UINT_PTR)params.cdrom;
+    }
+    return status;
+}
+
+static NTSTATUS wow64_cdrom_close(void *args)
+{
+    struct
+    {
+        PTR32 cdrom;
+    } *params32 = args;
+    return cdrom_close(ULongToPtr(params32->cdrom));
+}
+
+static NTSTATUS wow64_cdrom_ioctl(void *args)
+{
+    struct
+    {
+        PTR32 cdrom;
+        unsigned int code;
+        PTR32 input;
+        PTR32 output;
+        unsigned int input_size;
+        unsigned int output_size;
+        PTR32 ret_size;
+    } *params32 = args;
+    struct cdrom_ioctl_params params =
+    {
+        ULongToPtr(params32->cdrom),
+        params32->code,
+        ULongToPtr(params32->input),
+        ULongToPtr(params32->output),
+        params32->input_size,
+        params32->output_size,
+    };
+    NTSTATUS status = cdrom_ioctl(&params);
+    if (params32->ret_size)
+    {
+        unsigned int *ret_size32 = ULongToPtr(params32->ret_size);
+        *ret_size32 = params.ret_size;
+    }
+    return status;
+}
+
 static NTSTATUS wow64_detect_serial_ports(void *args)
 {
     struct
@@ -1009,6 +1066,9 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
     wow64_read_volume_file,
     wow64_match_unixdev,
     wow64_check_device_access,
+    wow64_cdrom_open,
+    wow64_cdrom_close,
+    wow64_cdrom_ioctl,
     wow64_detect_serial_ports,
     wow64_detect_parallel_ports,
     wow64_set_shell_folder,
@@ -1022,5 +1082,6 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
 };
 
 C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count );
+C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == unix_funcs_count );
 
 #endif  /* _WIN64 */
