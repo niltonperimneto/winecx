@@ -51,7 +51,9 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(mountmgr);
 
-static NTSTATUS errno_to_status( int err )
+static struct run_loop_params run_loop_params;
+
+NTSTATUS errno_to_status( int err )
 {
     TRACE( "errno = %d\n", err );
     switch (err)
@@ -641,6 +643,9 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
     read_volume_file,
     match_unixdev,
     check_device_access,
+    cdrom_open,
+    cdrom_close,
+    cdrom_ioctl,
     detect_serial_ports,
     detect_parallel_ports,
     set_shell_folder,

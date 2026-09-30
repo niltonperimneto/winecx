@@ -489,6 +489,7 @@ static void init_client_context( TEB *teb, struct opengl_client_context *client,
 #undef USE_GL_EXT
     const char *vendor, *device, *version, *rest = "";
     const struct opengl_funcs *funcs = teb->glTable;
+    struct opengl_drawable *draw = ctx->draw;
     size_t count = 0, i, len;
 
     if (!(version = (const char *)funcs->p_glGetString( GL_VERSION ))) version = "1.0";
@@ -538,6 +539,9 @@ static void init_client_context( TEB *teb, struct opengl_client_context *client,
     client->extension_count = count;
 
     if (TRACE_ON(opengl)) for (i = 0; i < count; i++) TRACE( "++ %s\n", extension_names[client->extension_array[i]] );
+
+    funcs->p_glViewport( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
+    funcs->p_glScissor( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
 }
 
 BOOL wrap_wglDeleteContext( TEB *teb, HGLRC client_context )
@@ -545,6 +549,23 @@ BOOL wrap_wglDeleteContext( TEB *teb, HGLRC client_context )
     const struct opengl_funcs *funcs = get_context_funcs( client_context );
     funcs->p_context_destroy( context_from_client_context( client_context ) );
     return TRUE;
+}
+
+static void pop_default_fbo_buffers( TEB *teb )
+{
+    const struct opengl_funcs *funcs = teb->glTable;
+    struct opengl_drawable *draw;
+    struct opengl_context *ctx;
+
+    pop_default_fbo( teb );
+
+    if (!(ctx = get_current_context( teb, &draw, NULL, NULL ))) return;
+    if (!ctx->draw_fbo)
+    {
+        if (!ctx->draw_buffer_count) wrap_glDrawBuffer( teb, ctx->draw_buffers[0], funcs->p_glDrawBuffer );
+        else wrap_glDrawBuffers( teb, ctx->draw_buffer_count, ctx->draw_buffers, funcs->p_glDrawBuffers );
+    }
+    if (!ctx->read_fbo) wrap_glReadBuffer( teb, ctx->read_buffer, funcs->p_glReadBuffer );
 }
 
 static GLenum drawable_buffer_from_buffer( struct opengl_drawable *drawable, GLenum buffer )
@@ -619,6 +640,7 @@ static void flush_context( TEB *teb, void (*flush)(void) )
         /* default implementation: call the functions directly */
         if (flush) flush();
     }
+    if (flags & GL_FLUSH_PRESENT || (ctx && !ctx->draw->client)) pop_default_fbo_buffers( teb );
 
     if (flags & GL_FLUSH_FORCE_SWAP)
     {
@@ -632,25 +654,6 @@ static void flush_context( TEB *teb, void (*flush)(void) )
         funcs->p_glBlitFramebuffer( 0, 0, size.cx, size.cy, 0, 0, size.cx, size.cy, mask, GL_NEAREST );
         if (ctx->read_fbo) funcs->p_glBindFramebuffer( GL_READ_FRAMEBUFFER, ctx->read_fbo );
         else funcs->p_glReadBuffer( drawable_buffer_from_buffer( read, ctx->read_buffer ) );
-    }
-}
-
-static void set_default_fbo_buffers( TEB *teb, struct opengl_context *ctx )
-{
-    const struct opengl_funcs *funcs = teb->glTable;
-    struct opengl_drawable *draw = ctx->draw;
-
-    if (!ctx->draw_fbo)
-    {
-        if (!ctx->draw_buffer_count) wrap_glDrawBuffer( teb, ctx->draw_buffers[0], funcs->p_glDrawBuffer );
-        else wrap_glDrawBuffers( teb, ctx->draw_buffer_count, ctx->draw_buffers, funcs->p_glDrawBuffers );
-    }
-    if (!ctx->read_fbo) wrap_glReadBuffer( teb, ctx->read_buffer, funcs->p_glReadBuffer );
-    if (!ctx->has_viewport && draw->draw_fbo && draw->client)
-    {
-        funcs->p_glViewport( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
-        funcs->p_glScissor( 0, 0, draw->virtual_size.cx, draw->virtual_size.cy );
-        ctx->has_viewport = GL_TRUE;
     }
 }
 
@@ -693,6 +696,8 @@ BOOL wrap_wglSwapBuffers( TEB *teb, HDC hdc )
     const struct opengl_funcs *funcs = get_dc_funcs( hdc );
     BOOL ret;
 
+    if (!funcs->p_wglSwapBuffers) return FALSE;
+
     resolve_default_fbo( teb, FALSE );
 
     if (!(ret = funcs->p_wglSwapBuffers( hdc )))
@@ -701,6 +706,7 @@ BOOL wrap_wglSwapBuffers( TEB *teb, HDC hdc )
         flush_context( teb, funcs->p_glFlush );
     }
 
+    pop_default_fbo_buffers( teb );
     return ret;
 }
 
@@ -725,7 +731,13 @@ BOOL wrap_wglMakeContextCurrentARB( TEB *teb, HDC draw_hdc, HDC read_hdc, HGLRC 
     struct opengl_client_context *client;
     struct opengl_context *ctx;
 
-    if (client_context)
+    if (HandleToULong( client_context ) == (UINT)-1)
+    {
+        const struct opengl_funcs *funcs = __wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION );
+        if (!funcs->p_make_current( NULL, NULL, NULL )) return FALSE;
+        teb->glTable = (void *)funcs;
+    }
+    else if (client_context)
     {
         const struct opengl_funcs *funcs = get_context_funcs( client_context );
         if (!(client = opengl_client_context_from_client( client_context ))) return FALSE;
@@ -735,13 +747,13 @@ BOOL wrap_wglMakeContextCurrentARB( TEB *teb, HDC draw_hdc, HDC read_hdc, HGLRC 
         teb->glReserved1[1] = read_hdc;
         teb->glTable = (void *)funcs;
         if (!client->major_version) init_client_context( teb, client, ctx );
-        pop_default_fbo( teb );
-        set_default_fbo_buffers( teb, ctx );
+        pop_default_fbo_buffers( teb );
     }
     else
     {
-        const struct opengl_funcs *funcs = teb->glTable;
+        const struct opengl_funcs *funcs = __wine_get_opengl_driver( WINE_OPENGL_DRIVER_VERSION );
         if (!funcs->p_make_current( NULL, NULL, NULL )) return FALSE;
+        teb->glTable = (void *)&null_opengl_funcs;
     }
 
     return TRUE;
@@ -750,7 +762,8 @@ BOOL wrap_wglMakeContextCurrentARB( TEB *teb, HDC draw_hdc, HDC read_hdc, HGLRC 
 HPBUFFERARB wrap_wglCreatePbufferARB( TEB *teb, HDC hdc, int format, int width, int height, const int *attribs, HPBUFFERARB client_pbuffer )
 {
     const struct opengl_funcs *funcs = get_dc_funcs( hdc );
-    if (!funcs->p_pbuffer_create( hdc, format, width, height, attribs, client_pbuffer )) return 0;
+    SIZE size = { .cx = width, .cy = height };
+    if (!funcs->p_pbuffer_create( hdc, format, size, attribs, client_pbuffer )) return 0;
     return client_pbuffer;
 }
 
@@ -906,8 +919,7 @@ void resolve_default_fbo( TEB *teb, BOOL read )
         if (drawable->srgb && enabled) funcs->p_glEnable( GL_FRAMEBUFFER_SRGB );
         else if (!drawable->srgb && !enabled) funcs->p_glDisable( GL_FRAMEBUFFER_SRGB );
 
-        pop_default_fbo( teb );
-        set_default_fbo_buffers( teb, ctx );
+        pop_default_fbo_buffers( teb );
     }
 }
 
