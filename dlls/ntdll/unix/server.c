@@ -1752,31 +1752,34 @@ void server_init_process_done(void)
         chdir( "/" );
     close( initial_cwd );
 
-    if ((exename = ntdll_wcsrchr( main_wargv[0], '\\' ))) exename++;
-    else exename = main_wargv[0];
-
-    /* CROSSOVER HACK: bug 3853 */
+    if (main_wargv && main_wargv[0])
     {
-        static const WCHAR explorerexeW[] = {'e','x','p','l','o','r','e','r','.','e','x','e',0};
-        const char *child_pipe = getenv("WINE_WAIT_CHILD_PIPE");
-        const char *ignore_child = getenv("WINE_WAIT_CHILD_PIPE_IGNORE");
-        if (child_pipe)
+        if ((exename = ntdll_wcsrchr( main_wargv[0], '\\' ))) exename++;
+        else exename = main_wargv[0];
+
+        /* CROSSOVER HACK: bug 3853 */
         {
-            if (!ntdll_wcsicmp( exename, explorerexeW ))
+            static const WCHAR explorerexeW[] = {'e','x','p','l','o','r','e','r','.','e','x','e',0};
+            const char *child_pipe = getenv("WINE_WAIT_CHILD_PIPE");
+            const char *ignore_child = getenv("WINE_WAIT_CHILD_PIPE_IGNORE");
+            if (child_pipe)
             {
-                int fd = atoi(child_pipe);
-                if (fd) close( fd );
-                unsetenv("WINE_WAIT_CHILD_PIPE");
-            }
-            else if (ignore_child)
-            {
-                WCHAR ignore[MAX_PATH];
-                ntdll_umbstowcs( ignore_child, strlen(ignore_child) + 1, ignore, MAX_PATH );
-                if (!ntdll_wcsicmp( exename, ignore ))
+                if (!ntdll_wcsicmp( exename, explorerexeW ))
                 {
                     int fd = atoi(child_pipe);
                     if (fd) close( fd );
                     unsetenv("WINE_WAIT_CHILD_PIPE");
+                }
+                else if (ignore_child)
+                {
+                    WCHAR ignore[MAX_PATH];
+                    ntdll_umbstowcs( ignore_child, strlen(ignore_child) + 1, ignore, MAX_PATH );
+                    if (!ntdll_wcsicmp( exename, ignore ))
+                    {
+                        int fd = atoi(child_pipe);
+                        if (fd) close( fd );
+                        unsetenv("WINE_WAIT_CHILD_PIPE");
+                    }
                 }
             }
         }

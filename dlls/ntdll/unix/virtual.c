@@ -3440,8 +3440,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
         return status;
     }
 
-    if (peb->OSMajorVersion > 5 && /* CW HACK 22939: ASLR is supported only on Windows Vista and later */
-        !pe_mapping->image.map_addr &&
+    if (!pe_mapping->image.map_addr &&
         (pe_mapping->image.image_charact & IMAGE_FILE_DLL) &&
         (pe_mapping->image.image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
     {
@@ -4090,6 +4089,9 @@ static BOOL force_laa(void)
     DWORD count;
     BOOL result=FALSE;
     WCHAR *app_name;
+
+    if (!main_wargv || !main_wargv[0])
+        return FALSE;
 
     if ((app_name = ntdll_wcsrchr( main_wargv[0], '\\' ))) app_name++;
     else app_name = main_wargv[0];
