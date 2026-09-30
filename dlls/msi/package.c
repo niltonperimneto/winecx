@@ -338,10 +338,9 @@ static void MSI_FreePackage( MSIOBJECTHDR *arg)
     msiobj_release( &package->db->hdr );
     free_package_structures(package);
     CloseHandle( package->log_file );
+
     if (package->rpc_server_started)
         RpcServerUnregisterIf(s_IWineMsiRemote_v0_0_s_ifspec, NULL, FALSE);
-    if (rpc_handle)
-        RpcBindingFree(&rpc_handle);
     if (package->custom_server_32_process)
         custom_stop_server(package->custom_server_32_process, package->custom_server_32_pipe);
     if (package->custom_server_64_process)
@@ -526,7 +525,12 @@ static LPWSTR get_fusion_filename(MSIPACKAGE *package)
         if (!RegQueryValueExW(hkey, L"InstallPath", NULL, &type, (BYTE *)path, &size))
         {
             len = lstrlenW(path) + lstrlenW(L"fusion.dll") + 2;
-            if (!(filename = malloc(len * sizeof(WCHAR)))) return NULL;
+            if (!(filename = malloc(len * sizeof(WCHAR))))
+            {
+                RegCloseKey(hkey);
+                RegCloseKey(netsetup);
+                return NULL;
+            }
 
             lstrcpyW(filename, path);
             lstrcatW(filename, L"\\");

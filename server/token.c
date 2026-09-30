@@ -30,7 +30,6 @@
 #include <unistd.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 
@@ -115,6 +114,7 @@ struct token
     struct acl    *default_dacl;    /* the default DACL to assign to objects created by this user */
     int            impersonation_level; /* impersonation level this token is capable of if non-primary token */
     int            elevation;       /* elevation type */
+    struct list    kernel_object;   /* list of kernel object pointers */
 };
 
 struct privilege
@@ -136,30 +136,16 @@ static void token_dump( struct object *obj, int verbose );
 static void token_destroy( struct object *obj );
 static int token_set_sd( struct object *obj, const struct security_descriptor *sd,
                          unsigned int set_info );
+static struct list *token_get_kernel_obj_list( struct object *obj );
 
 static const struct object_ops token_ops =
 {
-    sizeof(struct token),      /* size */
-    &token_type,               /* type */
-    token_dump,                /* dump */
-    no_add_queue,              /* add_queue */
-    NULL,                      /* remove_queue */
-    NULL,                      /* signaled */
-    NULL,                      /* satisfied */
-    no_signal,                 /* signal */
-    no_get_fd,                 /* get_fd */
-    default_get_sync,          /* get_sync */
-    default_map_access,        /* map_access */
-    default_get_sd,            /* get_sd */
-    token_set_sd,              /* set_sd */
-    no_get_full_name,          /* get_full_name */
-    no_lookup_name,            /* lookup_name */
-    no_link_name,              /* link_name */
-    NULL,                      /* unlink_name */
-    no_open_file,              /* open_file */
-    no_kernel_obj_list,        /* get_kernel_obj_list */
-    no_close_handle,           /* close_handle */
-    token_destroy              /* destroy */
+    .size    = sizeof(struct token),
+    .type    = &token_type,
+    .dump    = token_dump,
+    .set_sd  = token_set_sd,
+    .get_kernel_obj_list = token_get_kernel_obj_list,
+    .destroy = token_destroy,
 };
 
 static void token_dump( struct object *obj, int verbose )
@@ -174,6 +160,12 @@ static int token_set_sd( struct object *obj, const struct security_descriptor *s
                          unsigned int set_info )
 {
     return default_set_sd( obj, sd, set_info & ~LABEL_SECURITY_INFORMATION );
+}
+
+static struct list *token_get_kernel_obj_list( struct object *obj )
+{
+    struct token *token = (struct token *)obj;
+    return &token->kernel_object;
 }
 
 void security_set_thread_token( struct thread *thread, obj_handle_t handle )
@@ -484,6 +476,7 @@ static struct token *create_token( unsigned int primary, unsigned int session_id
             allocate_luid( &token->modified_id );
         list_init( &token->privileges );
         list_init( &token->groups );
+        list_init( &token->kernel_object );
         token->primary = primary;
         token->session_id = session_id;
         /* primary tokens don't have impersonation levels */
@@ -1093,7 +1086,7 @@ int check_object_access(struct token *token, struct object *obj, unsigned int *a
     if (!token)
         token = current->token ? current->token : current->process->token;
 
-    mapping.all = obj->ops->map_access( obj, GENERIC_ALL );
+    mapping.all = map_obj_access( obj, GENERIC_ALL );
 
     if (!obj->sd)
     {
@@ -1101,9 +1094,9 @@ int check_object_access(struct token *token, struct object *obj, unsigned int *a
         return TRUE;
     }
 
-    mapping.read  = obj->ops->map_access( obj, GENERIC_READ );
-    mapping.write = obj->ops->map_access( obj, GENERIC_WRITE );
-    mapping.exec = obj->ops->map_access( obj, GENERIC_EXECUTE );
+    mapping.read  = map_obj_access( obj, GENERIC_READ );
+    mapping.write = map_obj_access( obj, GENERIC_WRITE );
+    mapping.exec  = map_obj_access( obj, GENERIC_EXECUTE );
 
     res = token_access_check( token, obj->sd, *access, NULL, NULL,
                               &mapping, access, &status ) == STATUS_SUCCESS &&
@@ -1118,7 +1111,7 @@ int check_object_access(struct token *token, struct object *obj, unsigned int *a
 DECL_HANDLER(create_token)
 {
     struct token *token;
-    struct object_attributes *objattr;
+    struct object_params params;
     struct sid *user;
     struct sid_attrs *groups;
     struct luid_attr *privs;
@@ -1129,8 +1122,10 @@ DECL_HANDLER(create_token)
     unsigned int *attrs;
     struct sid *sid;
 
-    objattr = (struct object_attributes *)get_req_data();
-    user = (struct sid *)get_req_data_after_objattr( objattr, &data_size );
+    if (!get_req_object_attributes( &params )) return;
+    if (params.root) release_object( params.root );  /* unused */
+
+    user = (struct sid *)get_req_data_after_objattr( &params, &data_size );
 
     if (!user || !sid_valid_size( user, data_size ))
     {
@@ -1204,7 +1199,7 @@ DECL_HANDLER(create_token)
                           privs, req->priv_count, dacl, NULL, req->primary_group, req->impersonation_level, 0 );
     if (token)
     {
-        reply->token = alloc_handle( current->process, token, req->access, objattr->attributes );
+        reply->token = alloc_handle( current->process, token, req->access, params.attr );
         release_object( token );
     }
     free( default_dacl );
@@ -1325,25 +1320,24 @@ DECL_HANDLER(get_token_privileges)
 DECL_HANDLER(duplicate_token)
 {
     struct token *src_token;
-    struct unicode_str name;
-    const struct security_descriptor *sd;
-    const struct object_attributes *objattr = get_req_object_attributes( &sd, &name, NULL );
+    struct object_params params;
 
-    if (!objattr) return;
+    if (!get_req_object_attributes( &params )) return;
 
     if ((src_token = (struct token *)get_handle_obj( current->process, req->handle,
                                                      TOKEN_DUPLICATE,
                                                      &token_ops )))
     {
-        struct token *token = token_duplicate( src_token, req->primary, req->impersonation_level, sd, NULL, 0, NULL, 0 );
+        struct token *token = token_duplicate( src_token, req->primary, req->impersonation_level, params.sd, NULL, 0, NULL, 0 );
         if (token)
         {
             unsigned int access = req->access ? req->access : get_handle_access( current->process, req->handle );
-            reply->new_handle = alloc_handle_no_access_check( current->process, token, access, objattr->attributes );
+            reply->new_handle = alloc_handle_no_access_check( current->process, token, access, params.attr );
             release_object( token );
         }
         release_object( src_token );
     }
+    if (params.root) release_object( params.root );
 }
 
 /* creates a restricted version of a token */

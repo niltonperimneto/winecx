@@ -88,6 +88,9 @@ static BOOL g_enablecallchecks;
         expect_ ## func = called_ ## func = FALSE; \
     }while(0)
 
+#define CLEAR_CALLED(func) \
+    expect_ ## func = called_ ## func = 0
+
 /* object site */
 DEFINE_EXPECT(site_qi_IServiceProvider);
 DEFINE_EXPECT(site_qi_IXMLDOMDocument);
@@ -1403,8 +1406,8 @@ static void set_xhr_site(IXMLHttpRequest *xhr)
     CHECK_CALLED(sp_queryservice_SID_secmgr_htmldoc2);
     todo_wine
     CHECK_CALLED(sp_queryservice_SID_secmgr_xmldomdoc);
-    /* this one isn't very reliable
-    CHECK_CALLED(sp_queryservice_SID_secmgr_secmgr); */
+    /* this one isn't very reliable */
+    CLEAR_CALLED(sp_queryservice_SID_secmgr_secmgr);
 todo_wine {
     CHECK_CALLED(htmldoc2_get_all);
     CHECK_CALLED(collection_get_length);
@@ -1471,6 +1474,9 @@ static void test_XMLHTTP(void)
     check_interface(xhr, &IID_IXMLHttpRequest, TRUE);
     check_interface(xhr, &IID_IDispatch, TRUE);
     check_interface(xhr, &IID_IDispatchEx, FALSE);
+    check_interface(xhr, &IID_IObjectWithSite, TRUE);
+    check_interface(xhr, &IID_IObjectSafety, TRUE);
+    check_interface(xhr, &IID_ISupportErrorInfo, TRUE);
 
     VariantInit(&dummy);
     V_VT(&dummy) = VT_ERROR;
@@ -1806,6 +1812,19 @@ static void test_server_xhr(void)
 
     /* GET request */
     xhr = create_server_xhr();
+
+    check_interface(xhr, &IID_IServerXMLHTTPRequest, TRUE);
+    todo_wine
+    check_interface(xhr, &IID_IServerXMLHTTPRequest2, TRUE);
+    check_interface(xhr, &IID_IXMLHttpRequest, TRUE);
+    check_interface(xhr, &IID_IDispatch, TRUE);
+    todo_wine
+    check_interface(xhr, &IID_IDispatchEx, TRUE);
+    todo_wine
+    check_interface(xhr, &IID_IObjectWithSite, TRUE);
+    check_interface(xhr, &IID_ISupportErrorInfo, TRUE);
+    check_interface(xhr, &IID_IUnknown, TRUE);
+    check_interface(xhr, &IID_IObjectSafety, FALSE);
 
     test_server_open(xhr, "GET", xmltestA, S_OK);
 

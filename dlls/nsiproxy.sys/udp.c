@@ -66,7 +66,6 @@
 #endif
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
@@ -282,6 +281,7 @@ static NTSTATUS udp_endpoint_enumerate_all( void *key_data, UINT key_size, void 
         }
     }
 
+    free( addr_scopes );
     free( endpoints );
     return STATUS_SUCCESS;
 }

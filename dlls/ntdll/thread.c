@@ -24,7 +24,6 @@
 #include <sys/types.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "winternl.h"
 #include "wine/debug.h"
 #include "ntdll_misc.h"
@@ -53,11 +52,13 @@ static struct __wine_debug_channel *debug_options;
 
 static inline struct debug_info *get_info(void)
 {
+    unsigned int offset;
 #ifdef _WIN64
-    return (struct debug_info *)((TEB32 *)((char *)NtCurrentTeb() + 0x2000) + 1);
+    offset = NtCurrentTeb()->WowTebOffset ? NtCurrentTeb()->WowTebOffset + page_size : 2 * page_size;
 #else
-    return (struct debug_info *)(NtCurrentTeb() + 1);
+    offset = page_size;
 #endif
+    return (struct debug_info *)((char *)NtCurrentTeb() + offset);
 }
 
 static void init_options(void)

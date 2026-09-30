@@ -25,7 +25,6 @@
 #include "config.h"
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "x11drv.h"
 #include "wine/debug.h"
 
@@ -161,7 +160,7 @@ static void strip_driver_extra( DEVMODEW *modes, UINT count )
     {
         next = NEXT_DEVMODEW(mode);
         mode->dmDriverExtra = 0;
-        memcpy( modes + i, mode, sizeof(*mode) );
+        memmove( modes + i, mode, sizeof(*mode) );
     }
 }
 

@@ -57,6 +57,8 @@ struct fd_ops
     void (*poll_event)(struct fd *,int event);
     /* get file information */
     enum server_fd_type (*get_fd_type)(struct fd *fd);
+    /* perform an asynchronous create */
+    void (*create)( struct fd *, struct async *, unsigned int access, unsigned int sharing, unsigned int options );
     /* perform a read on the file */
     void (*read)(struct fd *, struct async *, file_pos_t );
     /* perform a write on the file */
@@ -106,7 +108,7 @@ extern void unlock_fd( struct fd *fd, file_pos_t offset, file_pos_t count );
 extern void allow_fd_caching( struct fd *fd );
 extern void set_fd_signaled( struct fd *fd, int signaled );
 extern char *dup_fd_name( struct fd *root, const char *name ) __WINE_DEALLOC(free) __WINE_MALLOC;
-extern void get_nt_name( struct fd *fd, struct unicode_str *name );
+extern struct unicode_str get_nt_name( struct fd *fd );
 
 extern struct object *default_fd_get_sync( struct object *obj );
 extern WCHAR *default_fd_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len );
@@ -116,22 +118,12 @@ extern void fd_cancel_async( struct fd *fd, struct async *async );
 extern void fd_queue_async( struct fd *fd, struct async *async, int type );
 extern void fd_async_wake_up( struct fd *fd, int type, unsigned int status );
 extern void fd_reselect_async( struct fd *fd, struct async_queue *queue );
-extern void no_fd_read( struct fd *fd, struct async *async, file_pos_t pos );
-extern void no_fd_write( struct fd *fd, struct async *async, file_pos_t pos );
-extern void no_fd_flush( struct fd *fd, struct async *async );
-extern void no_fd_get_file_info( struct fd *fd, obj_handle_t handle, unsigned int info_class );
 extern void default_fd_get_file_info( struct fd *fd, obj_handle_t handle, unsigned int info_class );
-extern void no_fd_get_volume_info( struct fd *fd, struct async *async, unsigned int info_class );
-extern void no_fd_ioctl( struct fd *fd, ioctl_code_t code, struct async *async );
 extern void default_fd_ioctl( struct fd *fd, ioctl_code_t code, struct async *async );
-extern void default_fd_cancel_async( struct fd *fd, struct async *async );
-extern void no_fd_queue_async( struct fd *fd, struct async *async, int type, int count );
 extern void default_fd_queue_async( struct fd *fd, struct async *async, int type, int count );
 extern void default_fd_reselect_async( struct fd *fd, struct async_queue *queue );
 extern void main_loop(void);
 extern void remove_process_locks( struct process *process );
-
-static inline struct fd *get_obj_fd( struct object *obj ) { return obj->ops->get_fd( obj ); }
 
 /* timeout functions */
 
@@ -186,11 +178,11 @@ extern const struct pe_image_info *get_view_image_info( const struct memory_view
 extern int get_view_nt_name( const struct memory_view *view, struct unicode_str *name );
 extern void free_mapped_views( struct process *process );
 extern size_t get_page_size(void);
-extern struct mapping *create_fd_mapping( struct object *root, const struct unicode_str *name, struct fd *fd,
+extern struct mapping *create_fd_mapping( struct object *root, struct unicode_str name, struct fd *fd,
                                           unsigned int attr, const struct security_descriptor *sd );
-extern struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
+extern struct object *create_user_data_mapping( struct object *root, struct unicode_str name,
                                                 unsigned int attr, const struct security_descriptor *sd );
-extern struct mapping *create_session_mapping( struct object *root, const struct unicode_str *name,
+extern struct mapping *create_session_mapping( struct object *root, struct unicode_str name,
                                                unsigned int attr, const struct security_descriptor *sd );
 extern void set_session_mapping( struct mapping *mapping );
 
@@ -217,15 +209,15 @@ extern struct obj_locator get_shared_object_locator( volatile void *object_shm )
 
 /* device functions */
 
-extern struct object *create_named_pipe_device( struct object *root, const struct unicode_str *name,
+extern struct object *create_named_pipe_device( struct object *root, struct unicode_str name,
                                                 unsigned int attr, const struct security_descriptor *sd );
-extern struct object *create_mailslot_device( struct object *root, const struct unicode_str *name,
+extern struct object *create_mailslot_device( struct object *root, struct unicode_str name,
                                               unsigned int attr, const struct security_descriptor *sd );
-extern struct object *create_console_device( struct object *root, const struct unicode_str *name,
+extern struct object *create_console_device( struct object *root, struct unicode_str name,
                                               unsigned int attr, const struct security_descriptor *sd );
-extern struct object *create_socket_device( struct object *root, const struct unicode_str *name,
+extern struct object *create_socket_device( struct object *root, struct unicode_str name,
                                               unsigned int attr, const struct security_descriptor *sd );
-extern struct object *create_unix_device( struct object *root, const struct unicode_str *name,
+extern struct object *create_unix_device( struct object *root, struct unicode_str name,
                                           unsigned int attr, const struct security_descriptor *sd, const char *unix_path );
 
 /* change notification functions */
@@ -254,8 +246,7 @@ typedef void (*async_completion_callback)( void *private );
 
 extern void free_async_queue( struct async_queue *queue );
 extern struct async *create_async( struct fd *fd, struct thread *thread, const struct async_data *data, struct iosb *iosb );
-extern struct async *create_request_async( struct fd *fd, unsigned int comp_flags, const struct async_data *data,
-                                           int is_system );
+extern struct async *create_request_async( struct fd *fd, const struct async_data *data, int is_system );
 extern obj_handle_t async_handoff( struct async *async, data_size_t *result, int force_blocking );
 extern void queue_async( struct async_queue *queue, struct async *async );
 extern void async_set_timeout( struct async *async, timeout_t timeout, unsigned int status );

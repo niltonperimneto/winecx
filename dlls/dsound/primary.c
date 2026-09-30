@@ -24,6 +24,7 @@
  */
 
 #include <stdarg.h>
+#include <assert.h>
 
 #define COBJMACROS
 #include "windef.h"
@@ -52,6 +53,12 @@ static DWORD speaker_config_to_channel_mask(DWORD speaker_config)
 
         case DSSPEAKER_5POINT1_BACK:
             return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+
+        case DSSPEAKER_7POINT1_SURROUND:
+            return KSAUDIO_SPEAKER_5POINT1 | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+
+        case DSSPEAKER_7POINT1_WIDE:
+            return KSAUDIO_SPEAKER_5POINT1 | SPEAKER_FRONT_LEFT_OF_CENTER | SPEAKER_FRONT_RIGHT_OF_CENTER;
     }
 
     WARN("unknown speaker_config %lu\n", speaker_config);
@@ -93,7 +100,11 @@ static DWORD DSOUND_FindSpeakerConfig(IMMDevice *mmdevice, int channels)
     PropVariantClear(&pv);
     IPropertyStore_Release(store);
 
-    if ((channels >= 6 || channels == 0) && (phys_speakers & KSAUDIO_SPEAKER_5POINT1) == KSAUDIO_SPEAKER_5POINT1)
+    if ((channels >= 8 || channels == 0) && (phys_speakers & KSAUDIO_SPEAKER_7POINT1_SURROUND) == KSAUDIO_SPEAKER_7POINT1_SURROUND)
+        return DSSPEAKER_7POINT1_SURROUND;
+    else if ((channels >= 8 || channels == 0) && (phys_speakers & KSAUDIO_SPEAKER_7POINT1) == KSAUDIO_SPEAKER_7POINT1)
+        return DSSPEAKER_7POINT1_WIDE;
+    else if ((channels >= 6 || channels == 0) && (phys_speakers & KSAUDIO_SPEAKER_5POINT1) == KSAUDIO_SPEAKER_5POINT1)
         return DSSPEAKER_5POINT1_BACK;
     else if ((channels >= 6 || channels == 0) && (phys_speakers & KSAUDIO_SPEAKER_5POINT1_SURROUND) == KSAUDIO_SPEAKER_5POINT1_SURROUND)
         return DSSPEAKER_5POINT1_SURROUND;
@@ -198,9 +209,10 @@ static void DSOUND_ReleaseDevice(DirectSoundDevice *device)
 static HRESULT DSOUND_PrimaryOpen(DirectSoundDevice *device, WAVEFORMATEX *wfx, DWORD frames, BOOL forcewave)
 {
     IDirectSoundBufferImpl** dsb = device->buffers;
+    WAVEFORMATEX *old_wfx;
+    float **input_tails;
     LPBYTE newbuf;
     DWORD new_buflen;
-    BOOL mixfloat = FALSE;
     int i;
 
     TRACE("(%p)\n", device);
@@ -208,17 +220,11 @@ static HRESULT DSOUND_PrimaryOpen(DirectSoundDevice *device, WAVEFORMATEX *wfx, 
     new_buflen = device->buflen;
     new_buflen -= new_buflen % wfx->nBlockAlign;
 
-    if (wfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
-        (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-         IsEqualGUID(&((WAVEFORMATEXTENSIBLE*)wfx)->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)))
-        mixfloat = TRUE;
-
     /* reallocate emulated primary buffer */
-    if (forcewave || !mixfloat) {
-        if (!forcewave)
-            new_buflen = frames * wfx->nChannels * sizeof(float);
-
-        newbuf = realloc(device->buffer, new_buflen);
+    if (forcewave)
+    {
+        /* forcewave means DSSCL_WRITEPRIMARY, which implies no mixing */
+        newbuf = malloc(new_buflen);
 
         if (!newbuf) {
             ERR("failed to allocate primary buffer\n");
@@ -226,31 +232,66 @@ static HRESULT DSOUND_PrimaryOpen(DirectSoundDevice *device, WAVEFORMATEX *wfx, 
         }
         FillMemory(newbuf, new_buflen, (wfx->wBitsPerSample == 8) ? 128 : 0);
     } else {
-        free(device->buffer);
+        assert(wfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+               (wfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+                IsEqualGUID(&((WAVEFORMATEXTENSIBLE*)wfx)->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)));
+
         newbuf = NULL;
     }
 
+    if (!(input_tails = calloc(device->nrofbuffers, sizeof(input_tails[0])))) {
+        free(newbuf);
+        return DSERR_OUTOFMEMORY;
+    }
+
+    old_wfx = device->pwfx;
+    device->pwfx = wfx;
+
+    for (i = 0; i < device->nrofbuffers; i++) {
+        AcquireSRWLockExclusive(&dsb[i]->lock);
+        DSOUND_RecalcFormat(dsb[i]);
+    }
+
+    for (i = 0; i < device->nrofbuffers; i++) {
+        DWORD input_tail_size = dsb[i]->pwfx->nChannels * dsb[i]->input_delay * sizeof(float);
+
+        if ((input_tails[i] = malloc(input_tail_size)))
+            continue;
+
+        ERR("failed to allocate secondary buffer input tail\n");
+
+        device->pwfx = old_wfx;
+
+        for (i = 0; i < device->nrofbuffers; i++) {
+            free(input_tails[i]);
+            DSOUND_RecalcFormat(dsb[i]);
+            ReleaseSRWLockExclusive(&dsb[i]->lock);
+        }
+
+        free(input_tails);
+        free(newbuf);
+
+        return DSERR_OUTOFMEMORY;
+    }
+
+    for (i = 0; i < device->nrofbuffers; i++) {
+        dsb[i]->input_tail = input_tails[i];
+        dsb[i]->input_tail_valid = FALSE;
+        ReleaseSRWLockExclusive(&dsb[i]->lock);
+    }
+
+    free(input_tails);
+    free(old_wfx);
+
+    free(device->buffer);
     device->buffer = newbuf;
     device->buflen = new_buflen;
-    free(device->pwfx);
-    device->pwfx = wfx;
 
     device->writelead = (wfx->nSamplesPerSec / 100) * wfx->nBlockAlign;
 
     TRACE("buflen: %lu, frames %lu\n", device->buflen, frames);
 
-    if (!mixfloat)
-        device->normfunction = normfunctions[wfx->wBitsPerSample/8 - 1];
-    else
-        device->normfunction = NULL;
-
     device->playpos = 0;
-
-    for (i = 0; i < device->nrofbuffers; i++) {
-        AcquireSRWLockExclusive(&dsb[i]->lock);
-        DSOUND_RecalcFormat(dsb[i]);
-        ReleaseSRWLockExclusive(&dsb[i]->lock);
-    }
 
     return DS_OK;
 }

@@ -103,6 +103,26 @@ static inline int ulock_wait( uint32_t operation, void *addr, uint64_t value, ui
     }
 }
 
+static inline void spin_hint(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm64__)
+    __asm__ __volatile__( "yield" ::: "memory" );
+#endif
+}
+
+/* How long to spin waiting for the server to acknowledge a registration before
+ * sleeping instead. Measured at 0: the pump round trip is longer than any spin
+ * worth doing, and a spinning waiter holds a core the pump needs. On an M4 Max,
+ * 8 threads, 100000 wakeups through the broker, multi wait ran 502 and 564ms at
+ * 0 spins against 854 and 781 at 32 and 789 and 1023 at 256. WINEMSYNC_SPINS
+ * re-tunes it without a rebuild. */
+#define MSYNC_REGISTER_SPINS    0
+#define MSYNC_REGISTER_SLEEP_NS 1000000
+
+static int msync_register_spins = MSYNC_REGISTER_SPINS;
+
 /*
  * Faster to directly do the syscall and inline everything, taken and slightly adapted
  * from xnu/libsyscall/mach/mach_msg.c
@@ -179,7 +199,8 @@ struct semaphore
     int max;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 C_ASSERT(sizeof(struct semaphore) == 16);
 
@@ -189,7 +210,8 @@ struct event
     int unused;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 C_ASSERT(sizeof(struct event) == 16);
 
@@ -199,7 +221,8 @@ struct mutex
     int count;  /* recursion count */
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 C_ASSERT(sizeof(struct mutex) == 16);
 
@@ -301,8 +324,15 @@ static inline void server_remove_wait( unsigned int msgh_id, const int *objs, vo
 static inline NTSTATUS msync_wait_single( int obj, void *obj_shm,
                                           ULONGLONG *end, int tid )
 {
-    int ret, val = 0;
+    struct event *event_obj = (struct event *)obj_shm;
+    NTSTATUS status = STATUS_SUCCESS;
+    int ret = 0, val = 0;
     ULONGLONG ns_timeleft = 0;
+
+    /* Publish before the last look at the value. A signal landing in that
+     * window either sees us and wakes, or has not happened yet, in which case
+     * ulock compares the value for us and does not put us to sleep. */
+    __atomic_add_fetch( &event_obj->single_waiters, 1, __ATOMIC_SEQ_CST );
 
     do 
     {
@@ -313,21 +343,31 @@ static inline NTSTATUS msync_wait_single( int obj, void *obj_shm,
                 val = tid;
         }
 
-        if (__atomic_load_n( (int *)obj_shm, __ATOMIC_ACQUIRE ) != val)
-            return STATUS_PENDING;
+        if (__atomic_load_n( (int *)obj_shm, __ATOMIC_SEQ_CST ) != val)
+        {
+            status = STATUS_PENDING;
+            break;
+        }
 
         if (end)
         {
             ns_timeleft = update_timeout( *end ) * 100;
-            if (!ns_timeleft) return STATUS_TIMEOUT;
+            if (!ns_timeleft)
+            {
+                status = STATUS_TIMEOUT;
+                break;
+            }
         }
         ret = ulock_wait( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, obj_shm, val, ns_timeleft );
     } while (ret == -EINTR || ret == -EFAULT);
 
     if (ret == -ETIMEDOUT)
-        return STATUS_TIMEOUT;
+        status = STATUS_TIMEOUT;
 
-    return STATUS_SUCCESS;
+    if (__atomic_sub_fetch( &event_obj->single_waiters, 1, __ATOMIC_SEQ_CST ) < 0)
+        __atomic_store_n( &event_obj->single_waiters, 0, __ATOMIC_SEQ_CST );
+
+    return status;
 }
 
 static inline int check_shm_contention( void **objs_shm, void *alert_obj_shm, int count, int tid )
@@ -359,7 +399,7 @@ static inline int check_shm_contention( void **objs_shm, void *alert_obj_shm, in
 static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert_obj, void *alert_obj_shm,
                                      int count, ULONGLONG *end, int tid )
 {
-    int ret, val;
+    int ret, val, spins;
     int *addr = shm_tid_map + tid;
     ULONGLONG ns_timeleft = 0;
     mach_msg_return_t mr;
@@ -373,21 +413,30 @@ static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert
     if (mr != MACH_MSG_SUCCESS)
         return STATUS_PENDING;
 
-    while (__atomic_load_n( addr, __ATOMIC_ACQUIRE ) == 2)
+    /* The server moves us off 2 once it has us registered, or straight to 0 if
+     * one of the objects was already signalled. Spin for that briefly, then
+     * publish 3 and sleep, so the pump is not competing with us for a core. */
+    spins = 0;
+    while ((val = __atomic_load_n( addr, __ATOMIC_ACQUIRE )) >= 2)
     {
         if (check_shm_contention( objs_shm, alert_obj_shm, count, tid ))
         {
-            int i;
-            for (i = 0; i < count; i++)
-            {
-                struct event *obj = (struct event *)objs_shm[i];
-
-                int refs = __atomic_sub_fetch( &obj->multiple_waiters, 1, __ATOMIC_SEQ_CST);
-                if (refs < 0)
-                    __atomic_store_n( &obj->multiple_waiters, 0, __ATOMIC_SEQ_CST);
-            }
+            server_remove_wait( msgh_id, objs, objs_shm, alert_obj, alert_obj_shm, count );
             return STATUS_PENDING;
         }
+
+        if (++spins <= msync_register_spins)
+        {
+            spin_hint();
+            continue;
+        }
+
+        if (val == 2 && !__atomic_compare_exchange_n( addr, &val, 3, 0,
+                                                      __ATOMIC_SEQ_CST, __ATOMIC_ACQUIRE ))
+            continue;
+
+        /* Bounded, so a wake we raced past cannot park us here for good. */
+        ulock_wait( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, addr, 3, MSYNC_REGISTER_SLEEP_NS );
     }
 
     do
@@ -615,6 +664,13 @@ void msync_init(void)
 
     pagesize = (long)vm_kernel_page_size;
 
+    if (getenv("WINEMSYNC_SPINS"))
+    {
+        int spins = atoi( getenv("WINEMSYNC_SPINS") );
+
+        if (spins >= 0) msync_register_spins = spins;
+    }
+
     shm_addrs = calloc( 128, sizeof(shm_addrs[0]) );
     shm_addrs_size = 128;
 
@@ -646,12 +702,30 @@ void msync_init(void)
     }
 }
 
+
+/* An auto-reset event, its server-side twin and a mutex release exactly one
+ * waiter. Waking the rest buys them a trip through the scheduler to find the
+ * object already taken, so wake one and leave them asleep. */
+static inline uint32_t wake_flags( unsigned short msync_type )
+{
+    switch (msync_type)
+    {
+    case MSYNC_AUTO_EVENT:
+    case MSYNC_AUTO_SERVER:
+    case MSYNC_MUTEX:
+        return 0;
+    default:
+        return ULF_WAKE_ALL;
+    }
+}
+
 static inline void signal_all( void *shm, unsigned int shm_idx )
 {
     __thread static mach_msg_header_t send_header;
     struct event *event_obj = (struct event *)shm;
 
-    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, shm, 0 );
+    if (__atomic_load_n( &event_obj->single_waiters, __ATOMIC_SEQ_CST ))
+        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | wake_flags( event_obj->msync_type ), shm, 0 );
 
     if (!__atomic_load_n( &event_obj->multiple_waiters, __ATOMIC_SEQ_CST ))
         return;
@@ -698,6 +772,16 @@ NTSTATUS msync_set_event_obj( int obj, LONG *prev_state )
 {
     struct event *event = get_shm( obj );
     LONG current;
+
+    /* Read before the exchange. Setting an event that is already set changes
+     * nothing and wakes nobody, but the exchange still takes the line
+     * exclusive, and a thread that signals in a loop then holds it against
+     * every waiter trying to take the event. */
+    if (__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ))
+    {
+        if (prev_state) *prev_state = 1;
+        return STATUS_SUCCESS;
+    }
 
     if (!(current = __atomic_exchange_n( &event->signaled, 1, __ATOMIC_SEQ_CST )))
         signal_all( (void *)event, obj );

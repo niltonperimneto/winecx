@@ -670,6 +670,12 @@ static BOOL parse_sid( const WCHAR *string, const WCHAR **end, SID *pisid, DWORD
     while (*string == ' ')
         string++;
 
+    if (!string[0] || !string[1])
+    {
+        SetLastError( ERROR_INVALID_SID );
+        return FALSE;
+    }
+
     *size = get_sid_size( string, end );
     if (!pisid) /* Simply compute the size */
         return TRUE;
@@ -1033,6 +1039,9 @@ static BOOL parse_acl( const WCHAR *string, DWORD *flags, ACL *acl, DWORD *ret_s
         if (*string != ')')
             goto err;
         string++;
+
+        while (*string == ' ')
+            string++;
 
         acesize = sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + sidlen;
         length += acesize;

@@ -169,7 +169,7 @@ extern BOOL X11DRV_Chord( PHYSDEV dev, INT left, INT top, INT right, INT bottom,
 extern BOOL X11DRV_Ellipse( PHYSDEV dev, INT left, INT top, INT right, INT bottom );
 extern BOOL X11DRV_ExtFloodFill( PHYSDEV dev, INT x, INT y, COLORREF color, UINT fillType );
 extern BOOL X11DRV_FillPath( PHYSDEV dev );
-extern BOOL X11DRV_GetDeviceGammaRamp( PHYSDEV dev, LPVOID ramp );
+extern UINT X11DRV_GetDeviceGammaRamp( PHYSDEV dev, LPVOID ramp );
 extern DWORD X11DRV_GetImage( PHYSDEV dev, BITMAPINFO *info,
                               struct gdi_image_bits *bits, struct bitblt_coords *src );
 extern COLORREF X11DRV_GetNearestColor( PHYSDEV dev, COLORREF color );
@@ -196,7 +196,7 @@ extern HPEN X11DRV_SelectPen( PHYSDEV dev, HPEN hpen, const struct brush_pattern
 extern COLORREF X11DRV_SetDCBrushColor( PHYSDEV dev, COLORREF crColor );
 extern COLORREF X11DRV_SetDCPenColor( PHYSDEV dev, COLORREF crColor );
 extern void X11DRV_SetDeviceClipping( PHYSDEV dev, HRGN rgn );
-extern BOOL X11DRV_SetDeviceGammaRamp( PHYSDEV dev, LPVOID ramp );
+extern UINT X11DRV_SetDeviceGammaRamp( PHYSDEV dev, LPVOID ramp );
 extern COLORREF X11DRV_SetPixel( PHYSDEV dev, INT x, INT y, COLORREF color );
 extern BOOL X11DRV_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
                                PHYSDEV src_dev, struct bitblt_coords *src, DWORD rop );
@@ -233,7 +233,7 @@ extern void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
                           const RECT *top_rect, DWORD flags );
 extern void X11DRV_ReleaseDC( HWND hwnd, HDC hdc );
 extern BOOL X11DRV_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update );
-extern void X11DRV_SetCapture( HWND hwnd, UINT flags );
+extern void X11DRV_SetCapture( HWND hwnd, UINT flags, HWND previous );
 extern void X11DRV_SetDesktopWindow( HWND hwnd );
 extern void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha,
                                                DWORD flags );
@@ -251,6 +251,7 @@ extern LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
 extern BOOL X11DRV_WindowPosChanging( HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects );
 extern BOOL X11DRV_GetWindowStyleMasks( HWND hwnd, UINT style, UINT ex_style, UINT *style_mask, UINT *ex_style_mask );
 extern BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags, RECT *rect, HWND *foreground );
+extern struct client_surface *X11DRV_CreateClientSurface( HWND hwnd, int format, BOOL raw );
 extern BOOL X11DRV_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface );
 extern void X11DRV_MoveWindowBits( HWND hwnd, const struct window_rects *old_rects,
                                    const struct window_rects *new_rects, const RECT *valid_rects );
@@ -364,11 +365,22 @@ struct x11drv_escape_get_drawable
     RECT                     dc_rect;      /* DC rectangle relative to drawable */
 };
 
-extern BOOL needs_offscreen_rendering( HWND hwnd );
+struct x11drv_client_surface
+{
+    struct client_surface client;
+    XWindowChanges changes;
+    Colormap colormap;
+    Window window;
+
+    HDC hdc_src;
+    HDC hdc_dst;
+};
+
+extern struct x11drv_client_surface *impl_from_client_surface( struct client_surface *client );
+
 extern void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode );
 extern Drawable get_dc_drawable( HDC hdc, RECT *rect );
 extern HRGN get_dc_monitor_region( HWND hwnd, HDC hdc );
-extern Window x11drv_client_surface_create( HWND hwnd, int format, struct client_surface **client );
 
 /**************************************************************************
  * X11 USER driver
@@ -401,7 +413,6 @@ struct x11drv_thread_data
 {
     Display *display;
     XEvent  *current_event;        /* event currently being processed */
-    HWND     grab_hwnd;            /* window that currently grabs the mouse */
     HWND     last_focus;           /* last window that had focus */
     HWND     keymapnotify_hwnd;    /* window that should receive modifier release events */
     XIM      xim;                  /* input method */
@@ -415,10 +426,15 @@ struct x11drv_thread_data
     int      net_supported_count;  /* number of _NET_SUPPORTED atoms */
     UINT     net_wm_state_mask;    /* mask of supported _NET_WM_STATE *bits */
 #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+    unsigned char       root_mask[XIMaskLen(XI_LASTEVENT)];
+    XIEventMask         root_events;
     XIValuatorClassInfo x_valuator;
     XIValuatorClassInfo y_valuator;
+    double              raw_x;
+    double              raw_y;
     int      xinput2_pointer;      /* XInput2 master pointer device id */
 #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+    int      root_window_users;    /* counter for root window XISelectEvents */
 
     struct display_state desired_state;       /* display state tracking the desired / win32 state */
     struct display_state pending_state;       /* display state tracking the pending / requested state */
@@ -427,10 +443,11 @@ struct x11drv_thread_data
 };
 
 extern struct x11drv_thread_data *x11drv_init_thread_data(void);
+extern pthread_key_t x11drv_thread_data_key;
 
 static inline struct x11drv_thread_data *x11drv_thread_data(void)
 {
-    return (struct x11drv_thread_data *)(UINT_PTR)NtUserGetThreadInfo()->driver_data;
+    return pthread_getspecific( x11drv_thread_data_key );
 }
 
 /* retrieve the thread display, or NULL if not created yet */
@@ -635,7 +652,8 @@ enum x11drv_net_wm_state
 
 struct monitor_indices
 {
-    unsigned int generation;
+    /* compared with memcmp, make sure there's no padding */
+    unsigned long generation;
     long indices[4];
 };
 
@@ -694,6 +712,7 @@ struct x11drv_win_data
     unsigned long wm_normal_hints_serial;/* serial of last pending WM_NORMAL_HINTS request */
     unsigned long configure_serial;    /* serial of last pending configure request */
     unsigned long net_wm_icon_serial;  /* serial of last pending _NET_WM_ICON request */
+    unsigned long state_locks;         /* X11 state requests lock while updating win32 state */
 };
 
 extern struct x11drv_win_data *get_win_data( HWND hwnd );
@@ -752,7 +771,8 @@ extern void X11DRV_ActivateWindow( HWND hwnd, HWND previous );
 extern void reapply_cursor_clipping(void);
 extern void ungrab_clipping_window(void);
 extern void move_resize_window( HWND hwnd, int dir, POINT pos );
-extern void X11DRV_InitKeyboard( Display *display );
+extern void x11drv_init_keyboard( Display *display );
+extern void x11drv_init_mouse( Display *display );
 extern BOOL X11DRV_ProcessEvents( DWORD mask );
 
 typedef int (*x11drv_error_callback)( Display *display, XErrorEvent *event, void *arg );
@@ -763,7 +783,7 @@ extern POINT virtual_screen_to_root( INT x, INT y );
 extern POINT root_to_virtual_screen( INT x, INT y );
 extern RECT get_host_primary_monitor_rect(void);
 extern RECT get_work_area( const RECT *monitor_rect );
-extern BOOL xinerama_get_fullscreen_monitors( const RECT *rect, unsigned int *generation, long *indices );
+extern BOOL xinerama_get_fullscreen_monitors( const RECT *rect, unsigned long *generation, long *indices );
 extern void xinerama_init( unsigned int width, unsigned int height );
 extern void init_recursive_mutex( pthread_mutex_t *mutex );
 extern void init_icm_profile(void);
@@ -835,7 +855,7 @@ struct x11drv_settings_handler
 
 extern void X11DRV_Settings_SetHandler(const struct x11drv_settings_handler *handler);
 
-extern void X11DRV_init_desktop( Window win, unsigned int width, unsigned int height );
+extern void X11DRV_init_desktop( Window win );
 extern BOOL is_virtual_desktop(void);
 extern BOOL is_desktop_fullscreen(void);
 extern BOOL is_detached_mode(const DEVMODEW *);
@@ -972,6 +992,13 @@ static inline HWND get_active_window(void)
     GUITHREADINFO info;
     info.cbSize = sizeof(info);
     return NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info ) ? info.hwndActive : 0;
+}
+
+static inline HWND get_capture_window(void)
+{
+    GUITHREADINFO info;
+    info.cbSize = sizeof(info);
+    return NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info ) ? info.hwndCapture : 0;
 }
 
 static inline BOOL intersect_rect( RECT *dst, const RECT *src1, const RECT *src2 )

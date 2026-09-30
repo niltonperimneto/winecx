@@ -268,9 +268,9 @@ static struct data_device_format *data_device_format_for_mime_type(const char *m
 
 static ATOM register_clipboard_format(const WCHAR *name)
 {
-    ATOM atom;
-    if (NtAddAtom(name, lstrlenW(name) * sizeof(WCHAR), &atom)) return 0;
-    return atom;
+    UNICODE_STRING name_str;
+    RtlInitUnicodeString(&name_str, name);
+    return NtUserRegisterWindowMessage(&name_str);
 }
 
 /**********************************************************************
@@ -900,7 +900,7 @@ static BOOL is_winewayland_clipboard_hwnd(HWND hwnd)
 {
     static const WCHAR clipboard_classnameW[] = {
         '_','_','w','i','n','e','w','a','y','l','a','n','d','_',
-        'c','l','i','p','b','o','a','r','d','_','m','a','n','a','g','e','r'};
+        'c','l','i','p','b','o','a','r','d','_','m','a','n','a','g','e','r',0};
     WCHAR buffer[64];
     UNICODE_STRING name = {.Buffer = buffer, .MaximumLength = sizeof(buffer)};
 

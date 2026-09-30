@@ -12,6 +12,9 @@
 /* Define to 1 if you have the <arpa/nameser.h> header file. */
 #undef HAVE_ARPA_NAMESER_H
 
+/* Define to 1 if you have the <asm/hwcap.h> header file. */
+#undef HAVE_ASM_HWCAP_H
+
 /* Define to 1 if you have the <asm/termbits.h> header file. */
 #undef HAVE_ASM_TERMBITS_H
 
@@ -44,6 +47,9 @@
 
 /* Define to 1 if you have the <cups/ppd.h> header file. */
 #undef HAVE_CUPS_PPD_H
+
+/* Define to 1 if you have the <dev/evdev/input.h> header file. */
+#undef HAVE_DEV_EVDEV_INPUT_H
 
 /* Define to 1 if you have the 'dladdr1' function. */
 #undef HAVE_DLADDR1
@@ -95,9 +101,6 @@
 
 /* Define to 1 if you have the <gettext-po.h> header file. */
 #undef HAVE_GETTEXT_PO_H
-
-/* Define to 1 if you have the 'gnutls_cipher_init' function. */
-#undef HAVE_GNUTLS_CIPHER_INIT
 
 /* Define if we have the libgphoto2_port development environment */
 #undef HAVE_GPHOTO2_PORT
@@ -153,9 +156,6 @@
 /* Define to 1 if you have the <libudev.h> header file. */
 #undef HAVE_LIBUDEV_H
 
-/* Define to 1 if you have the 'unwind' library (-lunwind). */
-#undef HAVE_LIBUNWIND
-
 /* Define if we have the wayland-egl development environment */
 #undef HAVE_LIBWAYLAND_EGL
 
@@ -173,6 +173,9 @@
 
 /* Define to 1 if you have the <linux/cdrom.h> header file. */
 #undef HAVE_LINUX_CDROM_H
+
+/* Define to 1 if you have the <linux/errqueue.h> header file. */
+#undef HAVE_LINUX_ERRQUEUE_H
 
 /* Define to 1 if you have the <linux/filter.h> header file. */
 #undef HAVE_LINUX_FILTER_H
@@ -203,6 +206,9 @@
 
 /* Define to 1 if you have the <linux/major.h> header file. */
 #undef HAVE_LINUX_MAJOR_H
+
+/* Define to 1 if you have the <linux/memfd.h> header file. */
+#undef HAVE_LINUX_MEMFD_H
 
 /* Define to 1 if you have the <linux/ntsync.h> header file. */
 #undef HAVE_LINUX_NTSYNC_H
@@ -246,11 +252,11 @@
 /* Define to 1 if you have the <mach-o/loader.h> header file. */
 #undef HAVE_MACH_O_LOADER_H
 
+/* Define to 1 if you have the 'memfd_create' function. */
+#undef HAVE_MEMFD_CREATE
+
 /* Define to 1 if you have the <mntent.h> header file. */
 #undef HAVE_MNTENT_H
-
-/* Define if MTLDevice protocol has registryID property. */
-#undef HAVE_MTLDEVICE_REGISTRYID
 
 /* Define to 1 if you have the <netdb.h> header file. */
 #undef HAVE_NETDB_H
@@ -570,6 +576,9 @@
 /* Define to 1 if you have the <sys/param.h> header file. */
 #undef HAVE_SYS_PARAM_H
 
+/* Define to 1 if you have the <sys/personality.h> header file. */
+#undef HAVE_SYS_PERSONALITY_H
+
 /* Define to 1 if you have the <sys/prctl.h> header file. */
 #undef HAVE_SYS_PRCTL_H
 
@@ -675,6 +684,9 @@
 /* Define to 1 if you have the <valgrind/valgrind.h> header file. */
 #undef HAVE_VALGRIND_VALGRIND_H
 
+/* Define to 1 if you have the <va/va_drm.h> header file. */
+#undef HAVE_VA_VA_DRM_H
+
 /* Define to 1 if the Wine preloader is being used. */
 #undef HAVE_WINE_PRELOADER
 
@@ -695,6 +707,9 @@
 
 /* Define to 1 if you have the <X11/extensions/XInput2.h> header file. */
 #undef HAVE_X11_EXTENSIONS_XINPUT2_H
+
+/* Define to 1 if you have the <X11/extensions/XInput.h> header file. */
+#undef HAVE_X11_EXTENSIONS_XINPUT_H
 
 /* Define to 1 if you have the <X11/extensions/Xrandr.h> header file. */
 #undef HAVE_X11_EXTENSIONS_XRANDR_H
@@ -798,6 +813,12 @@
 /* Define to the soname of the libv4l2 library. */
 #undef SONAME_LIBV4L2
 
+/* Define to the soname of the libva library. */
+#undef SONAME_LIBVA
+
+/* Define to the soname of the libva-drm library. */
+#undef SONAME_LIBVA_DRM
+
 /* Define to the soname of the libvulkan library. */
 #undef SONAME_LIBVULKAN
 
@@ -821,6 +842,9 @@
 
 /* Define to the soname of the libXinerama library. */
 #undef SONAME_LIBXINERAMA
+
+/* Define to the soname of the libxkbregistry library. */
+#undef SONAME_LIBXKBREGISTRY
 
 /* Define to the soname of the libXrandr library. */
 #undef SONAME_LIBXRANDR

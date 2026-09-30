@@ -64,7 +64,6 @@
 #endif
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
@@ -239,7 +238,7 @@ struct ipv6_addr_scope *get_ipv6_addr_scope_table( unsigned int *size )
             struct sockaddr_in6 *sin6;
             struct ipv6_addr_scope *entry;
 
-            if (cur->ifa_addr->sa_family != AF_INET6) continue;
+            if (!cur->ifa_addr || cur->ifa_addr->sa_family != AF_INET6) continue;
 
             if (++num > table_size)
             {
@@ -386,6 +385,7 @@ static NTSTATUS tcp_conns_enumerate_all( UINT filter, struct nsi_tcp_conn_key *k
         }
     }
 
+    free( addr_scopes );
     free( connections );
     return STATUS_SUCCESS;
 }

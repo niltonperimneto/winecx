@@ -240,7 +240,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_adapter_CheckInterfaceSupport(IWineDXGIAda
 
     if (FAILED(hr))
         return hr;
-    if (caps.max_feature_level < WINED3D_FEATURE_LEVEL_10)
+    if (!IsEqualGUID(guid, &IID_IDXGIDevice) && caps.max_feature_level < WINED3D_FEATURE_LEVEL_10)
         return DXGI_ERROR_UNSUPPORTED;
 
     if (umd_version)

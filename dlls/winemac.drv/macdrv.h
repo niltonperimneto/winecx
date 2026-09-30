@@ -30,7 +30,6 @@
 #include "macdrv_cocoa.h"
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "ntgdi.h"
@@ -87,8 +86,6 @@ extern const char* debugstr_cf(CFTypeRef t);
 
 extern CGRect macdrv_get_desktop_rect(void);
 extern void macdrv_reset_device_metrics(void);
-extern BOOL macdrv_GetDeviceGammaRamp(PHYSDEV dev, LPVOID ramp);
-extern BOOL macdrv_SetDeviceGammaRamp(PHYSDEV dev, LPVOID ramp);
 
 
 /**************************************************************************
@@ -100,13 +97,15 @@ enum macdrv_window_messages
 {
     WM_MACDRV_SET_WIN_REGION = WM_WINE_FIRST_DRIVER_MSG,
     WM_MACDRV_ACTIVATE_ON_FOLLOWING_FOCUS,
+    WM_MACDRV_CREATE_REMOTE_LAYER,
+    WM_MACDRV_RELEASE_REMOTE_LAYER,
 };
 
 struct macdrv_thread_data
 {
-    macdrv_event_queue          queue;
+    WineEventQueue             *queue;
     const macdrv_event         *current_event;
-    macdrv_window               capture_window;
+    WineWindow                 *capture_window;
     CFDataRef                   keyboard_layout_uchr;
     CGEventSourceKeyboardType   keyboard_type;
     bool                        iso_keyboard;
@@ -118,10 +117,11 @@ struct macdrv_thread_data
 };
 
 extern struct macdrv_thread_data *macdrv_init_thread_data(void);
+extern pthread_key_t macdrv_thread_data_key;
 
 static inline struct macdrv_thread_data *macdrv_thread_data(void)
 {
-    return (struct macdrv_thread_data *)(UINT_PTR)NtUserGetThreadInfo()->driver_data;
+    return pthread_getspecific( macdrv_thread_data_key );
 }
 
 
@@ -130,8 +130,8 @@ extern void macdrv_Beep(void);
 extern LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd, DWORD flags, LPVOID lpvoid);
 extern LRESULT macdrv_ClipboardWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 extern UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager, void *param);
-extern BOOL macdrv_GetDeviceGammaRamp(PHYSDEV dev, LPVOID ramp);
-extern BOOL macdrv_SetDeviceGammaRamp(PHYSDEV dev, LPVOID ramp);
+extern UINT macdrv_GetDeviceGammaRamp(PHYSDEV dev, LPVOID ramp);
+extern UINT macdrv_SetDeviceGammaRamp(PHYSDEV dev, LPVOID ramp);
 extern BOOL macdrv_ClipCursor(const RECT *clip, BOOL reset);
 extern LRESULT macdrv_NotifyIcon(HWND hwnd, UINT msg, NOTIFYICONDATAW *data);
 extern void macdrv_CleanupIcons(HWND hwnd);
@@ -153,18 +153,19 @@ extern void macdrv_UpdateLayeredWindow(HWND hwnd, BYTE alpha, UINT flags);
 extern LRESULT macdrv_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 extern BOOL macdrv_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects);
 extern BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *style_mask, UINT *ex_style_mask);
+extern struct client_surface *macdrv_CreateClientSurface(HWND hwnd, int pixel_format, BOOL raw);
 extern BOOL macdrv_CreateWindowSurface(HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface);
 extern void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                                     const struct window_rects *new_rects, struct window_surface *surface);
 extern void macdrv_DestroyCursorIcon(HCURSOR cursor);
 extern BOOL macdrv_GetCursorPos(LPPOINT pos);
-extern void macdrv_SetCapture(HWND hwnd, UINT flags);
+extern void macdrv_SetCapture(HWND hwnd, UINT flags, HWND previous);
 extern void macdrv_SetCursor(HWND hwnd, HCURSOR cursor);
 extern BOOL macdrv_SetCursorPos(INT x, INT y);
 extern BOOL macdrv_RegisterHotKey(HWND hwnd, UINT mod_flags, UINT vkey);
 extern void macdrv_UnregisterHotKey(HWND hwnd, UINT modifiers, UINT vkey);
 extern SHORT macdrv_VkKeyScanEx(WCHAR wChar, HKL hkl);
-extern UINT macdrv_ImeProcessKey(HIMC himc, UINT wparam, UINT lparam, const BYTE *state);
+extern UINT macdrv_ImeToAsciiEx(UINT vkey, UINT vsc, const BYTE *state, HIMC himc);
 extern UINT macdrv_MapVirtualKeyEx(UINT wCode, UINT wMapType, HKL hkl);
 extern INT macdrv_ToUnicodeEx(UINT virtKey, UINT scanCode, const BYTE *lpKeyState,
                               LPWSTR bufW, int bufW_size, UINT flags, HKL hkl);
@@ -182,8 +183,10 @@ extern void macdrv_ThreadDetach(void);
 struct macdrv_win_data
 {
     HWND                hwnd;                   /* hwnd that this private data belongs to */
-    macdrv_window       cocoa_window;
-    macdrv_view         client_view;
+    WineWindow         *cocoa_window;
+    WineContentView    *client_view;
+    struct remote_layer_entry *remote_layers;   /* which context renders which child hwnd */
+    unsigned int        remote_layer_count;
     struct window_rects rects;                  /* window rects in monitor DPI, relative to parent client area */
     int                 pixel_format;           /* pixel format for GL */
     HANDLE              drag_event;             /* event to signal that Cocoa-driven window dragging has ended */
@@ -201,23 +204,27 @@ struct macdrv_win_data
 
 struct macdrv_client_surface
 {
-    struct client_surface client;
-    macdrv_view           cocoa_view;
-    macdrv_metal_device   metal_device;
-    macdrv_metal_view     metal_view;
+    struct client_surface   client;
+    WineContentView        *cocoa_view;
+    id_WineMetalSwapChain   metal_swapchain;
+    HWND                    remote_toplevel;   /* set when the metal swapchain is hosted by another process */
 };
 
-static inline struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client)
+struct remote_layer_entry
 {
-    return CONTAINING_RECORD(client, struct macdrv_client_surface, client);
-}
+    unsigned int ctx;
+    HWND         hwnd;
+};
 
-extern struct macdrv_client_surface *macdrv_client_surface_create(HWND hwnd);
+extern void macdrv_resync_remote_layers(HWND toplevel);
+
+extern struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client);
+extern BOOL macdrv_client_surface_acquire_metal_swapchain(struct macdrv_client_surface *surface);
 
 extern struct macdrv_win_data *get_win_data(HWND hwnd);
 extern void release_win_data(struct macdrv_win_data *data);
 extern void init_win_context(void);
-extern macdrv_window macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
+extern WineWindow *macdrv_get_cocoa_window(HWND hwnd, BOOL require_on_screen);
 extern RGNDATA *get_region_data(HRGN hrgn, HDC hdc_lptodp);
 extern void activate_on_following_focus(void);
 
@@ -248,7 +255,6 @@ extern void macdrv_mouse_button(HWND hwnd, const macdrv_event *event);
 extern void macdrv_mouse_moved(HWND hwnd, const macdrv_event *event);
 extern void macdrv_mouse_scroll(HWND hwnd, const macdrv_event *event);
 extern void macdrv_release_capture(HWND hwnd, const macdrv_event *event);
-extern void macdrv_SetCapture(HWND hwnd, UINT flags);
 
 extern void macdrv_compute_keyboard_layout(struct macdrv_thread_data *thread_data);
 /* CrossOver Hack 10912: Mac Edit menu */

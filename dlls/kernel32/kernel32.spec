@@ -524,6 +524,7 @@
 @ stdcall -import FlsAlloc(ptr)
 @ stdcall -import FlsFree(long)
 @ stdcall -import FlsGetValue(long)
+@ stdcall -import FlsGetValue2(long)
 @ stdcall -import FlsSetValue(long ptr)
 @ stdcall -import FlushConsoleInputBuffer(long)
 @ stdcall -import FlushFileBuffers(long)
@@ -732,6 +733,7 @@
 # @ stub GetLongPathNameTransactedA
 # @ stub GetLongPathNameTransactedW
 @ stdcall -import GetLongPathNameW(wstr ptr long)
+@ stdcall -import GetMachineTypeAttributes(long ptr)
 @ stdcall GetMailslotInfo(long ptr ptr ptr ptr)
 @ stdcall GetMaximumProcessorCount(long)
 @ stdcall GetMaximumProcessorGroupCount()
@@ -1175,6 +1177,7 @@
 @ stdcall -import PeekNamedPipe(long ptr long ptr ptr ptr)
 @ stdcall -import PostQueuedCompletionStatus(long long ptr ptr)
 @ stdcall -import PackageIdFromFullName(wstr long ptr ptr)
+@ stdcall -import PackageFullNameFromId(ptr ptr ptr)
 @ stdcall PowerClearRequest(long long)
 @ stdcall PowerCreateRequest(ptr)
 @ stdcall PowerSetRequest(long long)
@@ -1189,6 +1192,9 @@
 @ stdcall Process32Next (ptr ptr)
 @ stdcall Process32NextW (ptr ptr)
 @ stdcall -import ProcessIdToSessionId(long ptr)
+@ stdcall -import PssCaptureSnapshot(ptr long long ptr)
+@ stdcall -import PssFreeSnapshot(ptr ptr)
+@ stdcall -import PssQuerySnapshot(ptr long ptr long)
 @ stdcall -import PulseEvent(long)
 @ stdcall -import PurgeComm(long long)
 @ stdcall -i386 -private -norelay QT_Thunk() krnl386.exe16.QT_Thunk
@@ -1222,8 +1228,8 @@
 @ stdcall -import RaiseFailFastException(ptr ptr long)
 @ stdcall -import ReadConsoleA(long ptr long ptr ptr)
 @ stdcall -import ReadConsoleInputA(long ptr long ptr)
-@ stub ReadConsoleInputExA
-@ stub ReadConsoleInputExW
+@ stdcall -import ReadConsoleInputExA(long ptr long ptr long)
+@ stdcall -import ReadConsoleInputExW(long ptr long ptr long)
 @ stdcall -import ReadConsoleInputW(long ptr long ptr)
 @ stdcall -import ReadConsoleOutputA(long ptr long long ptr)
 @ stdcall -import ReadConsoleOutputAttribute(long ptr long long ptr)
@@ -1323,15 +1329,15 @@
 @ stdcall -import ResolveLocaleName(wstr ptr long)
 @ stdcall RestoreLastError(long) NTDLL.RtlRestoreLastWin32Error
 @ stdcall -import ResumeThread(long)
-@ cdecl -arch=!i386 RtlAddFunctionTable(ptr long long) NTDLL.RtlAddFunctionTable
+@ cdecl -arch=!i386 RtlAddFunctionTable(ptr long long)
 @ stdcall -norelay -import RtlCaptureContext(ptr)
 @ stdcall RtlCaptureStackBackTrace(long long ptr ptr) NTDLL.RtlCaptureStackBackTrace
 @ stdcall -arch=!i386 RtlCompareMemory(ptr ptr long) NTDLL.RtlCompareMemory
 @ stdcall -arch=!i386 RtlCopyMemory(ptr ptr long) NTDLL.RtlCopyMemory
-@ cdecl -arch=!i386 RtlDeleteFunctionTable(ptr) NTDLL.RtlDeleteFunctionTable
+@ cdecl -arch=!i386 RtlDeleteFunctionTable(ptr)
 @ stdcall RtlFillMemory(ptr long long) NTDLL.RtlFillMemory
-@ cdecl -arch=!i386 RtlInstallFunctionTableCallback(long long long ptr ptr ptr) NTDLL.RtlInstallFunctionTableCallback
-@ stdcall -arch=!i386 RtlLookupFunctionEntry(long ptr ptr) NTDLL.RtlLookupFunctionEntry
+@ cdecl -arch=!i386 RtlInstallFunctionTableCallback(long long long ptr ptr ptr)
+@ stdcall -arch=!i386 RtlLookupFunctionEntry(long ptr ptr)
 @ stdcall RtlMoveMemory(ptr ptr long) NTDLL.RtlMoveMemory
 @ stdcall RtlPcToFileHeader(ptr ptr) NTDLL.RtlPcToFileHeader
 @ stdcall -arch=arm,x86_64 -norelay RtlRaiseException(ptr) NTDLL.RtlRaiseException
@@ -1508,6 +1514,7 @@
 @ stdcall SetThreadpoolThreadMaximum(ptr long) NTDLL.TpSetPoolMaxThreads
 @ stdcall SetThreadpoolThreadMinimum(ptr long) NTDLL.TpSetPoolMinThreads
 @ stdcall SetThreadpoolTimer(ptr ptr long long) NTDLL.TpSetTimer
+@ stdcall SetThreadpoolTimerEx(ptr ptr long long) NTDLL.TpSetTimerEx
 @ stdcall SetThreadpoolWait(ptr long ptr) NTDLL.TpSetWait
 @ stdcall -import SetTimeZoneInformation(ptr)
 @ stub SetTimerQueueTimer

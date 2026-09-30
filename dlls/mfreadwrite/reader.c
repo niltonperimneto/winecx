@@ -290,7 +290,7 @@ static ULONG WINAPI source_reader_async_command_AddRef(IUnknown *iface)
 static ULONG WINAPI source_reader_async_command_Release(IUnknown *iface)
 {
     struct source_reader_async_command *command = impl_from_async_command_IUnknown(iface);
-    ULONG refcount = InterlockedIncrement(&command->refcount);
+    ULONG refcount = InterlockedDecrement(&command->refcount);
 
     if (!refcount)
     {
@@ -317,6 +317,7 @@ static HRESULT source_reader_create_async_op(enum source_reader_async_op op, str
         return E_OUTOFMEMORY;
 
     command->IUnknown_iface.lpVtbl = &source_reader_async_command_vtbl;
+    command->refcount = 1;
     command->op = op;
 
     *ret = command;
@@ -407,17 +408,20 @@ static HRESULT WINAPI source_reader_callback_GetParameters(IMFAsyncCallback *ifa
 static void source_reader_response_ready(struct source_reader *reader, struct stream_response *response)
 {
     struct source_reader_async_command *command;
-    struct media_stream *stream = &reader->streams[response->stream_index];
+    struct media_stream *stream = NULL;
     HRESULT hr;
 
-    if (!stream->requests)
+    if (response->stream_index < reader->stream_count)
+        stream = &reader->streams[response->stream_index];
+
+    if (stream && !stream->requests)
         return;
 
     if (reader->async_callback)
     {
         if (SUCCEEDED(source_reader_create_async_op(SOURCE_READER_ASYNC_SAMPLE_READY, &command)))
         {
-            command->u.sample.stream_index = stream->index;
+            command->u.sample.stream_index = response->stream_index;
             if (FAILED(hr = MFPutWorkItem(reader->queue, &reader->async_commands_callback, &command->IUnknown_iface)))
                 WARN("Failed to submit async result, hr %#lx.\n", hr);
             IUnknown_Release(&command->IUnknown_iface);
@@ -426,7 +430,8 @@ static void source_reader_response_ready(struct source_reader *reader, struct st
     else
         WakeAllConditionVariable(&reader->sample_event);
 
-    stream->requests--;
+    if (stream)
+        stream->requests--;
 }
 
 static void source_reader_copy_sample_buffer(IMFSample *src, IMFSample *dst)
@@ -714,41 +719,52 @@ static void media_type_try_copy_attr(IMFMediaType *dst, IMFMediaType *src, const
     PropVariantClear(&value);
 }
 
-/* update a media type with additional attributes reported by upstream element */
-/* also present in mf/topology_loader.c pipeline */
-static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type, BOOL advanced)
+static HRESULT media_type_get_uint32_pair(IMFMediaType *type, const GUID *key, UINT32 *hi, UINT32 *lo)
+{
+    UINT64 data;
+    HRESULT hr = IMFMediaType_GetUINT64(type, key, &data);
+    if (FAILED(hr)) return hr;
+
+    *hi = data >> 32;
+    *lo = data & 0xffffffff;
+    return hr;
+}
+
+/* Update a media type with additional attributes reported by another media type, */
+/* also present as update_media_type_from_upstream in mf/topology_loader.c pipeline. */
+HRESULT update_media_type(IMFMediaType *dst_type, IMFMediaType *src_type, BOOL advanced)
 {
     HRESULT hr = S_OK;
 
     /* propagate common video attributes */
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_FRAME_SIZE, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_FRAME_RATE, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_VIDEO_ROTATION, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_FIXED_SIZE_SAMPLES, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_PIXEL_ASPECT_RATIO, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_ALL_SAMPLES_INDEPENDENT, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_MINIMUM_DISPLAY_APERTURE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_FRAME_SIZE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_FRAME_RATE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_VIDEO_ROTATION, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_FIXED_SIZE_SAMPLES, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_PIXEL_ASPECT_RATIO, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_ALL_SAMPLES_INDEPENDENT, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_MINIMUM_DISPLAY_APERTURE, &hr);
 
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_VIDEO_CHROMA_SITING, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_INTERLACE_MODE, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_TRANSFER_FUNCTION, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_VIDEO_PRIMARIES, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_YUV_MATRIX, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_VIDEO_LIGHTING, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_VIDEO_NOMINAL_RANGE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_VIDEO_CHROMA_SITING, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_INTERLACE_MODE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_TRANSFER_FUNCTION, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_VIDEO_PRIMARIES, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_YUV_MATRIX, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_VIDEO_LIGHTING, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_VIDEO_NOMINAL_RANGE, &hr);
 
     if (!advanced)
-        media_type_try_copy_attr(media_type, upstream_type, &MF_MT_DEFAULT_STRIDE, &hr);
+        media_type_try_copy_attr(dst_type, src_type, &MF_MT_DEFAULT_STRIDE, &hr);
 
     /* propagate common audio attributes */
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_NUM_CHANNELS, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
-    media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_NUM_CHANNELS, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
+    media_type_try_copy_attr(dst_type, src_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
 
     return hr;
 }
@@ -766,7 +782,10 @@ static HRESULT source_reader_push_transform_samples(struct source_reader *reader
                 && hr != MF_E_TRANSFORM_NEED_MORE_INPUT)
             return hr;
         if (SUCCEEDED(hr = IMFTransform_ProcessInput(entry->transform, 0, sample, 0)))
-            return source_reader_pull_transform_samples(reader, stream, entry);
+        {
+            hr = source_reader_pull_transform_samples(reader, stream, entry);
+            return hr == MF_E_TRANSFORM_NEED_MORE_INPUT ? S_OK : hr;
+        }
     }
     while (hr == MF_E_NOTACCEPTING);
 
@@ -881,7 +900,7 @@ static HRESULT source_reader_pull_transform_samples(struct source_reader *reader
         return hr;
     stream_info.cbSize = max(stream_info.cbSize, entry->min_buffer_size);
 
-    while (SUCCEEDED(hr))
+    do
     {
         MFT_OUTPUT_DATA_BUFFER out_buffer = {0};
         IMFMediaType *media_type;
@@ -930,6 +949,7 @@ static HRESULT source_reader_pull_transform_samples(struct source_reader *reader
         if (out_buffer.pEvents)
             IMFCollection_Release(out_buffer.pEvents);
     }
+    while (SUCCEEDED(hr) && next); /* queue only one output sample to avoid transform allocators becoming empty on drain */
 
     return hr;
 }
@@ -946,6 +966,8 @@ static HRESULT source_reader_drain_transform_samples(struct source_reader *reade
 
     if (FAILED(hr = IMFTransform_ProcessMessage(entry->transform, MFT_MESSAGE_COMMAND_DRAIN, 0)))
         WARN("Failed to drain transform %p, hr %#lx\n", entry->transform, hr);
+    /* MF_E_SAMPLEALLOCATOR_EMPTY can occur here if many samples are drained
+     * from a transform, but it's not an issue if a later call succeeds. */
     if (FAILED(hr = source_reader_pull_transform_samples(reader, stream, entry))
             && hr != MF_E_TRANSFORM_NEED_MORE_INPUT)
         WARN("Failed to pull pending samples, hr %#lx.\n", hr);
@@ -997,8 +1019,7 @@ static HRESULT source_reader_process_sample(struct source_reader *reader, struct
     entry = LIST_ENTRY(ptr, struct transform_entry, entry);
 
     /* It's assumed that decoder has 1 input and 1 output, both id's are 0. */
-    if (SUCCEEDED(hr = source_reader_push_transform_samples(reader, stream, entry, sample))
-            || hr == MF_E_TRANSFORM_NEED_MORE_INPUT)
+    if (SUCCEEDED(hr = source_reader_push_transform_samples(reader, stream, entry, sample)))
         hr = stream->requests ? source_reader_request_sample(reader, stream) : S_OK;
     else
         WARN("Transform failed to process output, hr %#lx.\n", hr);
@@ -1229,7 +1250,8 @@ static struct stream_response *media_stream_pop_response(struct source_reader *r
         if (stream && response->stream_index != stream->index)
             continue;
 
-        if (!stream) stream = &reader->streams[response->stream_index];
+        if (!stream && response->stream_index < reader->stream_count)
+            stream = &reader->streams[response->stream_index];
 
         if (response->sample && stream->allocator)
         {
@@ -1339,6 +1361,7 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 {
     struct stream_response *response = NULL;
     BOOL request_sample = FALSE;
+    struct list *ptr;
 
     if ((response = media_stream_pop_response(reader, stream)))
     {
@@ -1348,7 +1371,16 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
         *timestamp = response->timestamp;
         *sample = response->sample;
         if (*sample)
+        {
             IMFSample_AddRef(*sample);
+            if (stream->state == STREAM_STATE_EOS && (ptr = list_head(&stream->transforms)))
+            {
+                struct transform_entry *entry = LIST_ENTRY(ptr, struct transform_entry, entry);
+                /* Try to drain another sample in case the decoder emits many while draining.
+                 * Draining one at a time prevents exhaustion of the allocator in some cases. */
+                source_reader_drain_transform_samples(reader, stream, entry);
+            }
+        }
 
         source_reader_release_response(response);
     }
@@ -1506,7 +1538,7 @@ static HRESULT source_reader_flush(struct source_reader *reader, unsigned int in
 static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallback *iface, IMFAsyncResult *result)
 {
     struct source_reader *reader = impl_from_async_commands_callback_IMFAsyncCallback(iface);
-    struct media_stream *stream, stub_stream = { .requests = 1 };
+    struct media_stream *stream = NULL, stub_stream = { .requests = 1 };
     struct source_reader_async_command *command;
     struct stream_response *response;
     DWORD stream_index, stream_flags;
@@ -1543,6 +1575,10 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
                 else
                 {
                     stub_stream.index = command->u.read.stream_index;
+                    if (stub_stream.index < reader->stream_count)
+                        reader->streams[stub_stream.index].requests++;
+                    if (hr == MF_E_MEDIA_SOURCE_NO_STREAMS_SELECTED)
+                        hr = MF_E_INVALIDREQUEST;
                     source_reader_queue_response(reader, &stub_stream, hr, MF_SOURCE_READERF_ERROR, 0, NULL);
                 }
             }
@@ -1561,10 +1597,10 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
         case SOURCE_READER_ASYNC_SEEK:
 
             EnterCriticalSection(&reader->cs);
-            if (SUCCEEDED(IMFMediaSource_Start(reader->source, reader->descriptor, &command->u.seek.format,
+            if (FAILED(IMFMediaSource_Start(reader->source, reader->descriptor, &command->u.seek.format,
                     &command->u.seek.position)))
             {
-                reader->flags |= SOURCE_READER_SEEKING;
+                reader->flags &= ~SOURCE_READER_SEEKING;
             }
             LeaveCriticalSection(&reader->cs);
 
@@ -1573,7 +1609,8 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
         case SOURCE_READER_ASYNC_SAMPLE_READY:
 
             EnterCriticalSection(&reader->cs);
-            stream = &reader->streams[command->u.sample.stream_index];
+            if (command->u.sample.stream_index < reader->stream_count)
+                stream = &reader->streams[command->u.sample.stream_index];
             response = media_stream_pop_response(reader, stream);
             LeaveCriticalSection(&reader->cs);
 
@@ -2078,6 +2115,30 @@ static HRESULT set_default_video_attributes(struct source_reader *reader, IMFMed
     return hr;
 }
 
+static HRESULT apply_pixel_aspect_ratio(IMFMediaType *dst_type, IMFMediaType *src_type)
+{
+    UINT64 dst_frame_size;
+    UINT32 par_w, par_h, w, h;
+
+    if (SUCCEEDED(media_type_get_uint32_pair(src_type, &MF_MT_FRAME_SIZE, &w, &h)) &&
+            FAILED(IMFMediaType_GetUINT64(dst_type, &MF_MT_FRAME_SIZE, &dst_frame_size)) &&
+            SUCCEEDED(media_type_get_uint32_pair(src_type, &MF_MT_PIXEL_ASPECT_RATIO, &par_w, &par_h)))
+    {
+        /* Video processor should rectify the aspect ratio so the output has aspect ratio of 1:1.
+         * We are doing this here by explicitly changing the target frame size. */
+
+        UINT64 new_h = h, new_w = w;
+        if (par_w < par_h) new_h  = h * par_h / par_w;
+        else new_w = w * par_w / par_h;
+
+        new_h = (new_h + 1) & ~1;
+        new_w = (new_w + 1) & ~1;
+
+        return IMFMediaType_SetUINT64(dst_type, &MF_MT_FRAME_SIZE, ((UINT64)new_w << 32) + new_h);
+    }
+    return S_OK;
+}
+
 static HRESULT source_reader_create_transform(struct source_reader *reader, BOOL decoder, BOOL allow_processor,
         IMFMediaType *input_type, IMFMediaType *output_type, struct transform_entry **out)
 {
@@ -2170,24 +2231,34 @@ static HRESULT source_reader_create_transform(struct source_reader *reader, BOOL
                     && SUCCEEDED(hr = IMFTransform_GetInputCurrentType(transform, 0, &media_type)))
             {
                 BOOL enable_advanced;
+                IMFMediaType *output_type_copy = NULL;
+
+                hr = MFCreateMediaType(&output_type_copy);
+                if (SUCCEEDED(hr))
+                    hr = IMFMediaType_CopyAllItems(output_type, (IMFAttributes *)output_type_copy);
 
                 source_reader_allow_video_processor(reader, &enable_advanced);
 
-                if ((SUCCEEDED(hr = update_media_type_from_upstream(output_type, media_type, enable_advanced)))
-                        && FAILED(hr = IMFTransform_SetOutputType(transform, 0, output_type, 0))
-                        && FAILED(hr = set_matching_transform_output_type(transform, output_type)) && allow_processor
+                if (SUCCEEDED(hr) && (!enable_advanced || SUCCEEDED(hr = apply_pixel_aspect_ratio(output_type_copy, media_type)))
+                        && (SUCCEEDED(hr = update_media_type(output_type_copy, media_type, enable_advanced)))
+                        && FAILED(hr = IMFTransform_SetOutputType(transform, 0, output_type_copy, 0))
+                        && FAILED(hr = set_matching_transform_output_type(transform, output_type_copy)) && allow_processor
                         && SUCCEEDED(hr = IMFTransform_GetOutputAvailableType(transform, 0, 0, &media_type)))
                 {
                     struct transform_entry *converter;
 
                     if (SUCCEEDED(hr = IMFTransform_SetOutputType(transform, 0, media_type, 0))
-                            && SUCCEEDED(hr = update_media_type_from_upstream(output_type, media_type, enable_advanced))
-                            && (enable_advanced || SUCCEEDED(hr = set_default_video_attributes(reader, output_type)))
-                            && SUCCEEDED(hr = source_reader_create_transform(reader, FALSE, FALSE, media_type, output_type, &converter)))
+                            && (!enable_advanced || SUCCEEDED(hr = apply_pixel_aspect_ratio(output_type_copy, media_type)))
+                            && SUCCEEDED(hr = update_media_type(output_type_copy, media_type, enable_advanced))
+                            && (enable_advanced || SUCCEEDED(hr = set_default_video_attributes(reader, output_type_copy)))
+                            && SUCCEEDED(hr = source_reader_create_transform(reader, FALSE, FALSE, media_type, output_type_copy, &converter)))
                         list_add_tail(&entry->entry, &converter->entry);
 
                     IMFMediaType_Release(media_type);
                 }
+
+                if(output_type_copy)
+                    IMFMediaType_Release(output_type_copy);
 
                 if (SUCCEEDED(hr))
                 {
@@ -2357,6 +2428,8 @@ static HRESULT WINAPI src_reader_SetCurrentPosition(IMFSourceReaderEx *iface, RE
 
     if (SUCCEEDED(hr))
     {
+        reader->flags |= SOURCE_READER_SEEKING;
+
         for (i = 0; i < reader->stream_count; ++i)
         {
             reader->streams[i].last_sample_ts = 0;
@@ -2377,7 +2450,6 @@ static HRESULT WINAPI src_reader_SetCurrentPosition(IMFSourceReaderEx *iface, RE
         {
             if (SUCCEEDED(IMFMediaSource_Start(reader->source, reader->descriptor, format, position)))
             {
-                reader->flags |= SOURCE_READER_SEEKING;
                 while (reader->flags & SOURCE_READER_SEEKING)
                 {
                     SleepConditionVariableCS(&reader->state_event, &reader->cs, INFINITE);

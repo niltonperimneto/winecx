@@ -1,4 +1,4 @@
-EXTLIB    = libfaudio.a
+STATICLIB = libfaudio.a
 EXTRAINCL = $(FAUDIO_PE_CFLAGS)
 EXTRADEFS = -DFAUDIO_WIN32_PLATFORM -DHAVE_WMADEC -DNDEBUG
 
@@ -14,6 +14,7 @@ SOURCES = \
 	src/FAPOFX_masteringlimiter.c \
 	src/FAPOFX_reverb.c \
 	src/FAudio.c \
+	src/FAudioFX_collector.c \
 	src/FAudioFX_reverb.c \
 	src/FAudioFX_volumemeter.c \
 	src/FAudio_internal.c \

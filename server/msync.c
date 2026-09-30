@@ -371,7 +371,8 @@ struct msync_shm
     int high;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 
 static unsigned int last_allocated_idx = 1;
@@ -409,12 +410,31 @@ static inline mach_msg_return_t destroy_all( unsigned int shm_idx )
                 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0);
 }
 
+
+/* An auto-reset event, its server-side twin and a mutex release exactly one
+ * waiter. Waking the rest buys them a trip through the scheduler to find the
+ * object already taken, so wake one and leave them asleep. */
+static inline uint32_t wake_flags( unsigned short msync_type )
+{
+    switch (msync_type)
+    {
+    case MSYNC_AUTO_EVENT:
+    case MSYNC_AUTO_SERVER:
+    case MSYNC_MUTEX:
+        return 0;
+    default:
+        return ULF_WAKE_ALL;
+    }
+}
+
 static inline mach_msg_return_t signal_all( unsigned int shm_idx, int *shm )
 {
     static mach_msg_header_t send_header;
     struct msync_shm *obj = (struct msync_shm *)shm;
 
-    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, (void *)shm, 0 );
+    if (__atomic_load_n( &obj->single_waiters, __ATOMIC_SEQ_CST ))
+        __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | wake_flags( obj->msync_type ), (void *)shm, 0 );
+
     if (!__atomic_load_n( &obj->multiple_waiters, __ATOMIC_SEQ_CST ))
         return MACH_MSG_SUCCESS;
 
@@ -508,15 +528,17 @@ static void *mach_message_pump( void *args )
             val = __atomic_load_n( &obj->low, __ATOMIC_SEQ_CST );
             if ((is_mutex && (val == 0 || val == ~0 || val == tid)) || (!is_mutex && val != 0))
             {
-                if (i > 1) unregister_wait( &receive_message, tid, i );
+                if (i > 0) unregister_wait( &receive_message, tid, i );
                 wake_tid( tid );
                 break;
             }
             add_tid( receive_message.shm_idx[i], tid );
             if (i == count - 1)
             {
-                /* The client can stop spinning and safely start waiting now */
-                __atomic_store_n( shm_tid_map + tid, 1, __ATOMIC_RELEASE );
+                /* The client can stop spinning and safely start waiting now.
+                 * 3 means it gave up spinning and is asleep on the slot. */
+                if (__atomic_exchange_n( shm_tid_map + tid, 1, __ATOMIC_SEQ_CST ) == 3)
+                    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED, shm_tid_map + tid, 0 );
             }
         }
     }
@@ -623,10 +645,20 @@ void msync_init(void)
 
     MACH_CHECK_ERROR(mach_port_insert_right(mach_task_self(), receive_port, receive_port, MACH_MSG_TYPE_MAKE_SEND), "mach_port_insert_right");
 
-    limits.mpl_qlimit = 50;
+    /* A full queue blocks the sending thread inside mach_msg() until the pump
+     * drains it, so a burst of signals stalls the threads producing them. */
+    limits.mpl_qlimit = MACH_PORT_QLIMIT_MAX;
 
     if (getenv("WINEMSYNC_QLIMIT"))
-        limits.mpl_qlimit = atoi(getenv("WINEMSYNC_QLIMIT"));
+    {
+        int qlimit = atoi( getenv("WINEMSYNC_QLIMIT") );
+
+        if (qlimit > 0 && qlimit <= MACH_PORT_QLIMIT_MAX)
+            limits.mpl_qlimit = qlimit;
+        else
+            fprintf( stderr, "msync: warning: ignoring WINEMSYNC_QLIMIT=%d, must be 1 to %d\n",
+                     qlimit, MACH_PORT_QLIMIT_MAX );
+    }
 
     MACH_CHECK_ERROR(mach_port_set_attributes( mach_task_self(), receive_port, MACH_PORT_LIMITS_INFO,
                                         (mach_port_info_t)&limits, MACH_PORT_LIMITS_INFO_COUNT), "mach_port_set_attributes");
@@ -724,6 +756,7 @@ static unsigned int msync_alloc_shm( int low, int high, enum msync_type type )
     shm->high = high;
     shm->msync_type = type;
     shm->multiple_waiters = 0;
+    shm->single_waiters = 0;
     __atomic_store_n( &shm->refcount, 1, __ATOMIC_SEQ_CST );
 
     return shm_idx;
@@ -750,7 +783,8 @@ struct msync_event
     int unused;
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 
 void msync_set_event( struct msync *msync )
@@ -774,7 +808,8 @@ struct mutex
     int count;  /* recursion count */
     unsigned short msync_type;
     unsigned short refcount;
-    int multiple_waiters;
+    short multiple_waiters;   /* threads parked on their tid slot via the server */
+    short single_waiters;     /* threads parked on this object's own word */
 };
 
 void msync_abandon_mutexes( thread_id_t tid )
