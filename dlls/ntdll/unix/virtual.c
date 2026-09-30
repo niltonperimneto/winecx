@@ -4130,7 +4130,8 @@ static BOOL force_laa(void)
 }
 
 /***********************************************************************
-
+ *           set_large_address_space
+ */
 static void set_large_address_space(void)
 {
     BOOL large_address_space_active = ((main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) || force_laa());
@@ -5229,6 +5230,7 @@ static void virtual_release_address_space(void)
 #endif  /* _WIN64 */
 
 
+/***********************************************************************
  *             allocate_virtual_memory
  *
  * NtAllocateVirtualMemory[Ex] implementation.
