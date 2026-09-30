@@ -320,7 +320,7 @@ static unsigned int logical_proc_info_ex_size, logical_proc_info_ex_alloc_size;
 static SYSTEM_NUMA_INFORMATION numa_info;
 static ULONG_PTR system_cpu_mask;
 
-static pthread_mutex_t timezone_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t timezone_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 
 static const char default_tzinfo_dir[] = "/usr/share/zoneinfo";
 static const WCHAR Time_ZonesW[] = { '\\','R','e','g','i','s','t','r','y','\\',
@@ -2820,12 +2820,12 @@ static int weekday_to_mday(int year, int day, int mon, int day_of_week)
     wday = 1; /* 1 - 1st, ...., 5 - last */
     while (wday < day)
     {
-        struct tm *tm;
+        struct tm tm_buf, *tm;
 
         date.tm_mday += 7;
         date.tm_isdst = -1;
         tmp = mktime(&date);
-        tm = localtime(&tmp);
+        tm = localtime_r(&tmp, &tm_buf);
         if (tm->tm_mon != mon)
             break;
         mday = tm->tm_mday;
@@ -3005,18 +3005,18 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, int year)
 
 static time_t find_dst_change(time_t start, time_t end, int *is_dst)
 {
-    struct tm *tm;
+    struct tm tm_buf, *tm;
     ULONGLONG min = (sizeof(time_t) == sizeof(int)) ? (ULONG)start : start;
     ULONGLONG max = (sizeof(time_t) == sizeof(int)) ? (ULONG)end : end;
     time_t pos;
 
-    tm = localtime(&start);
+    tm = localtime_r(&start, &tm_buf);
     *is_dst = !tm->tm_isdst;
     TRACE("starting date isdst %d, %s", !*is_dst, ctime(&start));
 
     for (pos = min; pos <= max; pos += 30 * 24 * 3600)
     {
-        tm = localtime(&pos);
+        tm = localtime_r(&pos, &tm_buf);
         if (tm->tm_isdst == *is_dst)
         {
             max = pos;
@@ -3027,7 +3027,7 @@ static time_t find_dst_change(time_t start, time_t end, int *is_dst)
     while (min <= max)
     {
         pos = (min + max) / 2;
-        tm = localtime(&pos);
+        tm = localtime_r(&pos, &tm_buf);
 
         if (tm->tm_isdst != *is_dst)
             min = pos + 1;
@@ -3126,7 +3126,7 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
     static RTL_DYNAMIC_TIME_ZONE_INFORMATION cached_tzi;
     static int current_year = -1, current_bias = 65535;
     RTL_DYNAMIC_TIME_ZONE_INFORMATION reg_tzi;
-    struct tm *tm, tm1, tm2;
+    struct tm tm_buf, *tm, tm1, tm2;
     time_t year_start, year_end, tmp, dlt = 0, std = 0;
     int is_dst, bias;
     BOOL inverted_dst;
@@ -3134,10 +3134,10 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
     mutex_lock( &timezone_mutex );
 
     year_start = time(NULL);
-    tm = gmtime(&year_start);
+    tm = gmtime_r(&year_start, &tm_buf);
     bias = (LONG)(mktime(tm) - year_start) / 60;
 
-    tm = localtime(&year_start);
+    tm = localtime_r(&year_start, &tm_buf);
     if (current_year == tm->tm_year && current_bias == bias)
     {
         *tzi = cached_tzi;
@@ -3194,7 +3194,7 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
     else
     {
         tmp = dlt - tzi->Bias * 60;
-        tm = gmtime(&tmp);
+        tm = gmtime_r(&tmp, &tm_buf);
         TRACE("dlt gmtime: %s", asctime(tm));
 
         tzi->DaylightBias = -60;
@@ -3215,7 +3215,7 @@ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
             tzi->DaylightBias);
 
         tmp = std - tzi->Bias * 60 - tzi->DaylightBias * 60;
-        tm = gmtime(&tmp);
+        tm = gmtime_r(&tmp, &tm_buf);
         TRACE("std gmtime: %s", asctime(tm));
 
         tzi->StandardBias = 0;
