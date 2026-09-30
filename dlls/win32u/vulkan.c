@@ -3080,6 +3080,11 @@ static void vulkan_init_once(void)
     else
         ERR( "Using %s\n", libvulkan );
 
+    /* Opt-in host loader for the experimental KosmicKrisp runtime launcher.
+     * Keep the normal CrossOver backend selection unchanged when unset. */
+    if (getenv( "WINE_VULKAN_LIBRARY" ) && *getenv( "WINE_VULKAN_LIBRARY" ))
+        libvulkan = getenv( "WINE_VULKAN_LIBRARY" );
+
     if (!(vulkan_handle = dlopen( libvulkan, RTLD_NOW )))
     {
         ERR( "Failed to load %s: %s\n", libvulkan, dlerror() );
