@@ -633,4 +633,12 @@ extern void macdrv_client_surface_presented(const macdrv_event *event);
 extern void *macdrv_get_view_d3dmetal_client_surface(WineContentView *v);
 void macdrv_set_view_d3dmetal_client_surface(WineContentView *v, void *client_surface);
 
+/* Backward compatibility typedefs for D3DMetal / GPTK ABI */
+typedef WineWindow *macdrv_window;
+typedef WineContentView *macdrv_view;
+typedef id_MTLDevice macdrv_metal_device;
+typedef WineMetalView *macdrv_metal_view;
+typedef CAMetalLayer *macdrv_metal_layer;
+typedef id_WineMetalSwapChain macdrv_metal_swapchain;
+
 #endif  /* __WINE_MACDRV_COCOA_H */
