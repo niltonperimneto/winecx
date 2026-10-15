@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#import "config.h"
+#import "macdrv.h"
+
 #import "cocoa_app.h"
 #import "cocoa_cursorclipping.h"
 #import "cocoa_event.h"
@@ -53,9 +56,6 @@ static NSString* const WineExternalQuitNotificationExeNameKey = @"ExeName";
 static NSString* const WineExternalQuitNotificationSourcePIDKey = @"SourcePID";
 static NSString* const WineExternalQuitNotificationWineConfigDirKey = @"WineConfigDir";
 static NSString* const WineExternalQuitNotificationWinePrefixKey = @"WinePrefix";
-
-bool macdrv_err_on;
-
 
 #if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
 @interface NSApplication (CooperativeActivationSelectorsForOldSDKs)
@@ -723,7 +723,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             }
         }
 
-        NSDisableScreenUpdates();
+        [NSAnimationContext beginGrouping];
 
         // Go from back to front so that all windows in front of one which is
         // elevated for full-screen are also elevated.
@@ -776,7 +776,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             prev = window;
         }];
 
-        NSEnableScreenUpdates();
+        [NSAnimationContext endGrouping];
 
         [wineWindows release];
 
@@ -2679,30 +2679,6 @@ void OnMainThreadAsync(dispatch_block_t block)
 }
 
 @end
-
-/***********************************************************************
- *              LogError
- */
-void LogError(const char* func, NSString* format, ...)
-{
-    va_list args;
-    va_start(args, format);
-    LogErrorv(func, format, args);
-    va_end(args);
-}
-
-/***********************************************************************
- *              LogErrorv
- */
-void LogErrorv(const char* func, NSString* format, va_list args)
-{
-@autoreleasepool
-{
-    NSString* message = [[NSString alloc] initWithFormat:format arguments:args];
-    fprintf(stderr, "err:%s:%s", func, [message UTF8String]);
-    [message release];
-}
-}
 
 /***********************************************************************
  *              macdrv_window_rejected_focus

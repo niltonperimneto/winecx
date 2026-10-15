@@ -2483,7 +2483,15 @@ static void test_immediate_context(void)
     ok(refcount == expected_refcount, "Got refcount %lu, expected %lu.\n", refcount, expected_refcount);
 
     enabled = ID3D11Multithread_GetMultithreadProtected(multithread);
-    todo_wine ok(!enabled, "Multithread protection is %#x.\n", enabled);
+    ok(!enabled, "Multithread protection is %#x.\n", enabled);
+    enabled = ID3D11Multithread_SetMultithreadProtected(multithread, TRUE);
+    ok(!enabled, "Previous multithread protection is %#x.\n", enabled);
+    enabled = ID3D11Multithread_GetMultithreadProtected(multithread);
+    ok(enabled, "Multithread protection is %#x.\n", enabled);
+    enabled = ID3D11Multithread_SetMultithreadProtected(multithread, FALSE);
+    ok(enabled, "Previous multithread protection is %#x.\n", enabled);
+    enabled = ID3D11Multithread_GetMultithreadProtected(multithread);
+    ok(!enabled, "Multithread protection is %#x.\n", enabled);
 
     ID3D11Multithread_Release(multithread);
 
