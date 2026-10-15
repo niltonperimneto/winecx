@@ -1,0 +1,99 @@
+name: winecx CI
+
+# Compile-checks the subsystems this fork patches for macOS. The complete
+# runtime is built and smoke-tested by niltonperimneto/winecx-gptk once a
+# change here lands and its pin is bumped.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winecx-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  whitespace:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Reject whitespace errors in added lines
+        run: |
+          # Upstream imports are excluded: only lines this fork adds are checked.
+          git diff --check "origin/${{ github.base_ref }}...HEAD" -- . \
+            ':!ANNOUNCE.md' ':!configure' ':!**/*.idl' ':!libs/**'
+
+  compile:
+    name: compile macOS subsystems (x86_64)
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+      - name: Install build dependencies
+        run: brew install bison flex mingw-w64 ccache
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: winecx-ccache-x86_64-${{ github.sha }}
+          restore-keys: winecx-ccache-x86_64-
+      - name: Configure
+        run: |
+          mkdir build && cd build
+          # shellcheck disable=SC2016 # expanded by the x86_64 shell
+          arch -x86_64 /bin/bash -c '
+            export PATH="$(brew --prefix bison)/bin:$(brew --prefix flex)/bin:$PATH"
+            ../src/configure --enable-archs=i386,x86_64 --disable-tests \
+              CC="ccache clang -arch x86_64" OBJC="ccache clang -arch x86_64" \
+              x86_64_CC="ccache x86_64-w64-mingw32-gcc" i386_CC="ccache i686-w64-mingw32-gcc" \
+              --without-x --without-wayland --without-oss --without-alsa --without-pulse \
+              --without-sane --without-usb --without-v4l2 --without-pcap --without-capi \
+              --without-opencl --without-cups --without-gstreamer --without-ffmpeg \
+              --without-sdl --without-krb5 --without-netapi --without-gphoto --without-dbus'
+      - name: Build patched subsystems
+        working-directory: build
+        run: |
+          # shellcheck disable=SC2016 # expanded by the x86_64 shell
+          arch -x86_64 /bin/bash -c '
+            export PATH="$(brew --prefix bison)/bin:$(brew --prefix flex)/bin:$PATH"
+            make -j"$(/usr/sbin/sysctl -n hw.ncpu)" \
+              dlls/ntdll/ntdll.so dlls/win32u/win32u.so dlls/winemac.drv/winemac.so \
+              dlls/mountmgr.sys/mountmgr.so dlls/kernelbase/x86_64-windows/kernelbase.dll \
+              dlls/ntdll/x86_64-windows/ntdll.dll dlls/ntdll/i386-windows/ntdll.dll \
+              dlls/d3d11/x86_64-windows/d3d11.dll dlls/winemac.drv/x86_64-windows/winemac.drv'
+          ccache --show-stats
+
+  notify-hub:
+    # Lets winecx-gptk open a pin bump; it rebuilds only the Wine layers.
+    needs: compile
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch component-updated to winecx-gptk
+        env:
+          GH_TOKEN: ${{ secrets.HUB_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::HUB_DISPATCH_TOKEN is not set; winecx-gptk was not notified"
+            exit 0
+          fi
+          gh api repos/niltonperimneto/winecx-gptk/dispatches \
+            -f event_type=component-updated \
+            -F "client_payload[component]=winecx" \
+            -F "client_payload[repo]=${{ github.repository }}" \
+            -F "client_payload[sha]=${{ github.sha }}"
