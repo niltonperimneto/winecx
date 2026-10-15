@@ -3112,7 +3112,7 @@ static void vulkan_init_once(void)
     VkExtensionProperties *properties = NULL;
     uint32_t count = 0;
     VkResult res;
-    const char *libvulkan, *graphics_backend;
+    const char *libvulkan;
 
 #ifdef __APPLE__
     static char kk_lib[PATH_MAX];
@@ -3124,14 +3124,12 @@ static void vulkan_init_once(void)
     /* Explicit environment variables take highest priority */
     if (getenv( "WINE_VULKAN_LIBRARY" ) && *getenv( "WINE_VULKAN_LIBRARY" ))
         libvulkan = getenv( "WINE_VULKAN_LIBRARY" );
-    else if (getenv( "CX_LIBVULKAN" ) && *getenv( "CX_LIBVULKAN" ) &&
-             (graphics_backend = getenv( "CX_ACTIVE_GRAPHICS_BACKEND" )) &&
-             !strcmp( graphics_backend, "wined3d" ))
+    else if (getenv( "CX_LIBVULKAN" ) && *getenv( "CX_LIBVULKAN" ))
         libvulkan = getenv( "CX_LIBVULKAN" );
     else
     {
 #ifdef __APPLE__
-        /* KosmicKrisp supersedes MoltenVK when present in the runtime bundle */
+        /* Resolve from win32u rather than the working directory so relocated runtimes work. */
         Dl_info dli;
         if (dladdr( (void *)vulkan_init_once, &dli ) && dli.dli_fname)
         {
@@ -3144,8 +3142,12 @@ static void vulkan_init_once(void)
                 if ((slash = strrchr( path, '/' ))) *slash = 0; /* strip /x86_64-unix */
                 if ((slash = strrchr( path, '/' ))) *slash = 0; /* strip /wine -> .../lib */
 
-                snprintf( kk_lib, sizeof(kk_lib), "%s/kosmickrisp/libvulkan.1.dylib", path );
-                snprintf( kk_icd, sizeof(kk_icd), "%s/kosmickrisp/kosmickrisp_icd.json", path );
+                if (snprintf( kk_lib, sizeof(kk_lib), "%s/kosmickrisp/libvulkan.1.dylib", path ) >= sizeof(kk_lib) ||
+                    snprintf( kk_icd, sizeof(kk_icd), "%s/kosmickrisp/kosmickrisp_icd.json", path ) >= sizeof(kk_icd))
+                {
+                    ERR( "Runtime Vulkan path is too long.\n" );
+                    return;
+                }
 
                 if (!access( kk_lib, R_OK ) && !access( kk_icd, R_OK ))
                 {
@@ -3161,31 +3163,18 @@ static void vulkan_init_once(void)
                 }
             }
         }
+#else
+        libvulkan = DEFAULT_LIBVULKAN;
 #endif
-        if (!libvulkan)
-            libvulkan = DEFAULT_LIBVULKAN;
     }
 
     if (!libvulkan)
     {
-        ERR( "Wine was built without Vulkan support.\n" );
+        ERR( "No Vulkan loader available; check the runtime kosmickrisp loader and ICD.\n" );
         return;
     }
 
     if (!(vulkan_handle = dlopen( libvulkan, RTLD_NOW )))
-    {
-#ifdef __APPLE__
-        if (libvulkan == kk_lib && DEFAULT_LIBVULKAN && strcmp( DEFAULT_LIBVULKAN, "" ))
-        {
-            ERR( "Failed to load KosmicKrisp %s (%s), falling back to MoltenVK %s\n",
-                 kk_lib, dlerror(), DEFAULT_LIBVULKAN );
-            libvulkan = DEFAULT_LIBVULKAN;
-            vulkan_handle = dlopen( libvulkan, RTLD_NOW );
-        }
-#endif
-    }
-
-    if (!vulkan_handle)
     {
         ERR( "Failed to load %s: %s\n", libvulkan, dlerror() );
         return;
