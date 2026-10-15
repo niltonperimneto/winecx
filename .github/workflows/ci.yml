@@ -63,7 +63,8 @@ jobs:
               --without-x --without-wayland --without-oss --without-alsa --without-pulse \
               --without-sane --without-usb --without-v4l2 --without-pcap --without-capi \
               --without-opencl --without-cups --without-gstreamer --without-ffmpeg \
-              --without-sdl --without-krb5 --without-netapi --without-gphoto --without-dbus'
+              --without-sdl --without-krb5 --without-netapi --without-gphoto --without-dbus \
+              --without-freetype --without-gnutls --without-unwind'
       - name: Build patched subsystems
         working-directory: build
         run: |
