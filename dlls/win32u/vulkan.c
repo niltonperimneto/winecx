@@ -3121,11 +3121,15 @@ static void vulkan_init_once(void)
 
     libvulkan = NULL;
 
-    /* Explicit environment variables take highest priority */
-    if (getenv( "WINE_VULKAN_LIBRARY" ) && *getenv( "WINE_VULKAN_LIBRARY" ))
-        libvulkan = getenv( "WINE_VULKAN_LIBRARY" );
-    else if (getenv( "CX_LIBVULKAN" ) && *getenv( "CX_LIBVULKAN" ))
-        libvulkan = getenv( "CX_LIBVULKAN" );
+    /* Explicit overrides fail closed, including an empty override. */
+    if ((libvulkan = getenv( "WINE_VULKAN_LIBRARY" )) || (libvulkan = getenv( "CX_LIBVULKAN" )))
+    {
+        if (!*libvulkan)
+        {
+            ERR( "Empty Vulkan loader override; unset WINE_VULKAN_LIBRARY or CX_LIBVULKAN to use the runtime.\n" );
+            return;
+        }
+    }
     else
     {
 #ifdef __APPLE__
