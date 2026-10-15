@@ -3100,6 +3100,12 @@ static const struct vulkan_driver_funcs lazydrv_funcs =
     .p_map_device_extensions = lazydrv_map_device_extensions,
 };
 
+#ifdef SONAME_LIBVULKAN
+#define DEFAULT_LIBVULKAN SONAME_LIBVULKAN
+#else
+#define DEFAULT_LIBVULKAN NULL
+#endif
+
 static void vulkan_init_once(void)
 {
     struct vulkan_instance_extensions extensions = {0};
@@ -3157,17 +3163,23 @@ static void vulkan_init_once(void)
         }
 #endif
         if (!libvulkan)
-            libvulkan = SONAME_LIBVULKAN;
+            libvulkan = DEFAULT_LIBVULKAN;
+    }
+
+    if (!libvulkan)
+    {
+        ERR( "Wine was built without Vulkan support.\n" );
+        return;
     }
 
     if (!(vulkan_handle = dlopen( libvulkan, RTLD_NOW )))
     {
 #ifdef __APPLE__
-        if (libvulkan == kk_lib && strcmp( SONAME_LIBVULKAN, "" ))
+        if (libvulkan == kk_lib && DEFAULT_LIBVULKAN && strcmp( DEFAULT_LIBVULKAN, "" ))
         {
             ERR( "Failed to load KosmicKrisp %s (%s), falling back to MoltenVK %s\n",
-                 kk_lib, dlerror(), SONAME_LIBVULKAN );
-            libvulkan = SONAME_LIBVULKAN;
+                 kk_lib, dlerror(), DEFAULT_LIBVULKAN );
+            libvulkan = DEFAULT_LIBVULKAN;
             vulkan_handle = dlopen( libvulkan, RTLD_NOW );
         }
 #endif
