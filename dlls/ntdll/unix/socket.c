@@ -25,6 +25,7 @@
 #include "config.h"
 #include <assert.h>
 #include <errno.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -439,6 +440,19 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
                         break;
                     }
 #endif /* IP_TOS */
+
+/* Darwin reports received TOS data with cmsg_type IP_RECVTOS rather than
+ * IP_TOS.  The payload is one byte, while Windows exposes an INT. */
+#if defined(IP_RECVTOS) && (!defined(IP_TOS) || IP_RECVTOS != IP_TOS)
+                    case IP_RECVTOS:
+                    {
+                        INT tos = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                        ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TOS, ptr, &ctlsize,
+                                                    &tos, sizeof(INT) );
+                        if (!ptr) goto error;
+                        break;
+                    }
+#endif
 
 #if defined(IP_TTL)
                     case IP_TTL:
@@ -2401,7 +2415,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
         {
             int value = *(DWORD *)in_buffer ? IPV6_PMTUDISC_DO : IPV6_PMTUDISC_DONT;
 
-            return do_setsockopt( handle, io, IPPROTO_IP, IPV6_MTU_DISCOVER, &value, sizeof(value) );
+            return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &value, sizeof(value) );
         }
 #else
         {
@@ -2653,17 +2667,21 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
             return do_setsockopt( handle, io, IPPROTO_TCP, TCP_KEEPALIVE, in_buffer, in_size );
 #endif
 
+#if defined(TCP_KEEPINTVL)
         case IOCTL_AFD_WINE_GET_TCP_KEEPINTVL:
             return do_getsockopt( handle, io, IPPROTO_TCP, TCP_KEEPINTVL, out_buffer, out_size );
 
         case IOCTL_AFD_WINE_SET_TCP_KEEPINTVL:
             return do_setsockopt( handle, io, IPPROTO_TCP, TCP_KEEPINTVL, in_buffer, in_size );
+#endif
 
+#if defined(TCP_KEEPCNT)
         case IOCTL_AFD_WINE_GET_TCP_KEEPCNT:
             return do_getsockopt( handle, io, IPPROTO_TCP, TCP_KEEPCNT, out_buffer, out_size );
 
         case IOCTL_AFD_WINE_SET_TCP_KEEPCNT:
             return do_setsockopt( handle, io, IPPROTO_TCP, TCP_KEEPCNT, in_buffer, in_size );
+#endif
 
         default:
         {
