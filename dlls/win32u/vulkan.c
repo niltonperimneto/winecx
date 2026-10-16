@@ -3180,7 +3180,21 @@ static void vulkan_init_once(void)
 
     if (!(vulkan_handle = dlopen( libvulkan, RTLD_NOW )))
     {
-        ERR( "Failed to load %s: %s\n", libvulkan, dlerror() );
+        const char *messages[] = {libvulkan, dlerror()};
+        unsigned int i;
+
+        /* dyld repeats long search paths; Wine's debug output buffer is fixed-size. */
+        ERR( "Failed to load Vulkan loader:\n" );
+        for (i = 0; i < ARRAY_SIZE(messages); ++i)
+        {
+            const char *message = messages[i];
+            while (message && *message)
+            {
+                size_t length = min( strlen(message), 512 );
+                ERR( "%.*s\n", (int)length, message );
+                message += length;
+            }
+        }
         return;
     }
 
