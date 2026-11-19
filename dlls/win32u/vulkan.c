@@ -27,6 +27,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include "ntstatus.h"
 #include "win32u_private.h"
@@ -448,6 +449,11 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
         instance->obj.extensions.has_VK_EXT_surface_maintenance1 = 1;
     if (vulkan_funcs.host_extensions.has_VK_KHR_get_physical_device_properties2)
         instance->obj.extensions.has_VK_KHR_get_physical_device_properties2 = 1;
+    if (vulkan_funcs.host_extensions.has_VK_KHR_portability_enumeration)
+    {
+        instance->obj.extensions.has_VK_KHR_portability_enumeration = 1;
+        info->flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
     if (use_external_memory())
         instance->obj.extensions.has_VK_KHR_external_memory_capabilities = 1;
 
@@ -3122,25 +3128,101 @@ static const struct vulkan_driver_funcs lazydrv_funcs =
     .p_map_device_extensions = lazydrv_map_device_extensions,
 };
 
+#ifdef SONAME_LIBVULKAN
+#define DEFAULT_LIBVULKAN SONAME_LIBVULKAN
+#else
+#define DEFAULT_LIBVULKAN NULL
+#endif
+
 static void vulkan_init_once(void)
 {
     struct vulkan_instance_extensions extensions = {0};
     VkExtensionProperties *properties = NULL;
     uint32_t count = 0;
     VkResult res;
-    const char *libvulkan, *graphics_backend;
+    const char *libvulkan;
 
-    /* CW HACK 25909: Allow specifying libvulkan */
-    if (!(libvulkan = getenv( "CX_LIBVULKAN" )) ||
-        !(graphics_backend = getenv( "CX_ACTIVE_GRAPHICS_BACKEND" )) ||
-        strcmp( graphics_backend, "wined3d" ))
-        libvulkan = SONAME_LIBVULKAN;
+#ifdef __APPLE__
+    static char kk_lib[PATH_MAX];
+    static char kk_icd[PATH_MAX];
+#endif
+
+    libvulkan = NULL;
+
+    /* Explicit overrides fail closed, including an empty override. */
+    if ((libvulkan = getenv( "WINE_VULKAN_LIBRARY" )) || (libvulkan = getenv( "CX_LIBVULKAN" )))
+    {
+        if (!*libvulkan)
+        {
+            ERR( "Empty Vulkan loader override; unset WINE_VULKAN_LIBRARY or CX_LIBVULKAN to use the runtime.\n" );
+            return;
+        }
+    }
     else
-        ERR( "Using %s\n", libvulkan );
+    {
+#ifdef __APPLE__
+        /* Resolve from win32u rather than the working directory so relocated runtimes work. */
+        Dl_info dli;
+        if (dladdr( (void *)vulkan_init_once, &dli ) && dli.dli_fname)
+        {
+            char path[PATH_MAX];
+            char *slash;
+            if (strlen( dli.dli_fname ) < sizeof(path))
+            {
+                strcpy( path, dli.dli_fname );
+                if ((slash = strrchr( path, '/' ))) *slash = 0; /* strip /win32u.so */
+                if ((slash = strrchr( path, '/' ))) *slash = 0; /* strip /x86_64-unix */
+                if ((slash = strrchr( path, '/' ))) *slash = 0; /* strip /wine -> .../lib */
+
+                if (snprintf( kk_lib, sizeof(kk_lib), "%s/kosmickrisp/libvulkan.1.dylib", path ) >= sizeof(kk_lib) ||
+                    snprintf( kk_icd, sizeof(kk_icd), "%s/kosmickrisp/kosmickrisp_icd.json", path ) >= sizeof(kk_icd))
+                {
+                    ERR( "Runtime Vulkan path is too long.\n" );
+                    return;
+                }
+
+                if (!access( kk_lib, R_OK ) && !access( kk_icd, R_OK ))
+                {
+                    if (!getenv( "VK_DRIVER_FILES" ))
+                    {
+                        unsetenv( "VK_ICD_FILENAMES" );
+                        unsetenv( "VK_ADD_DRIVER_FILES" );
+                        unsetenv( "VK_LOADER_DRIVERS_SELECT" );
+                        unsetenv( "VK_LOADER_DRIVERS_DISABLE" );
+                        setenv( "VK_DRIVER_FILES", kk_icd, 0 );
+                    }
+                    libvulkan = kk_lib;
+                }
+            }
+        }
+#else
+        libvulkan = DEFAULT_LIBVULKAN;
+#endif
+    }
+
+    if (!libvulkan)
+    {
+        ERR( "No Vulkan loader available; check the runtime kosmickrisp loader and ICD.\n" );
+        return;
+    }
 
     if (!(vulkan_handle = dlopen( libvulkan, RTLD_NOW )))
     {
-        ERR( "Failed to load %s: %s\n", libvulkan, dlerror() );
+        const char *messages[] = {libvulkan, dlerror()};
+        unsigned int i;
+
+        /* dyld repeats long search paths; Wine's debug output buffer is fixed-size. */
+        ERR( "Failed to load Vulkan loader:\n" );
+        for (i = 0; i < ARRAY_SIZE(messages); ++i)
+        {
+            const char *message = messages[i];
+            while (message && *message)
+            {
+                size_t length = min( strlen(message), 512 );
+                ERR( "%.*s\n", (int)length, message );
+                message += length;
+            }
+        }
         return;
     }
 

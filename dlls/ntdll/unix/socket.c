@@ -441,6 +441,19 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
                     }
 #endif /* IP_TOS */
 
+/* Darwin reports received TOS data with cmsg_type IP_RECVTOS rather than
+ * IP_TOS.  The payload is one byte, while Windows exposes an INT. */
+#if defined(IP_RECVTOS) && (!defined(IP_TOS) || IP_RECVTOS != IP_TOS)
+                    case IP_RECVTOS:
+                    {
+                        INT tos = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                        ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TOS, ptr, &ctlsize,
+                                                    &tos, sizeof(INT) );
+                        if (!ptr) goto error;
+                        break;
+                    }
+#endif
+
 #if defined(IP_TTL)
                     case IP_TTL:
                     {

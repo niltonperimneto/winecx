@@ -50,6 +50,7 @@ SOURCES = \
 	threadpool.c \
 	time.c \
 	unix/alpc.c \
+	unix/child_policy.c \
 	unix/debug.c \
 	unix/env.c \
 	unix/file.c \

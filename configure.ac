@@ -1938,12 +1938,10 @@ fi
 dnl *** Check for Vulkan ***
 if test "x$with_vulkan" != "xno"
 then
-    WINE_CHECK_SONAME(vulkan, vkGetInstanceProcAddr,,
-        [WINE_CHECK_SONAME(MoltenVK, vkGetInstanceProcAddr,
-            [AC_DEFINE_UNQUOTED(SONAME_LIBVULKAN,["$ac_cv_lib_soname_MoltenVK"])])])
+    WINE_CHECK_SONAME(vulkan, vkGetInstanceProcAddr)
 fi
-WINE_NOTICE_WITH(vulkan,[test "x$ac_cv_lib_soname_vulkan$ac_cv_lib_soname_MoltenVK" = "x"],
-                 [libvulkan and libMoltenVK ${notice_platform}development files not found, Vulkan won't be supported.])
+WINE_NOTICE_WITH(vulkan,[test "x$ac_cv_lib_soname_vulkan" = "x"],
+                 [libvulkan ${notice_platform}development files not found, Vulkan won't be supported.])
 
 dnl **** Check for gcc specific options ****
 

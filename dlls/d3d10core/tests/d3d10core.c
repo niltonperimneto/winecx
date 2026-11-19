@@ -1755,6 +1755,14 @@ static void test_device_interfaces(void)
     ok(enabled, "Multithread protection is %#x.\n", enabled);
     enabled = ID3D11Multithread_GetMultithreadProtected(d3d11_multithread);
     ok(enabled, "Multithread protection is %#x.\n", enabled);
+    enabled = ID3D10Multithread_SetMultithreadProtected(multithread, FALSE);
+    ok(enabled, "Previous multithread protection is %#x.\n", enabled);
+    enabled = ID3D11Multithread_GetMultithreadProtected(d3d11_multithread);
+    ok(!enabled, "Multithread protection is %#x.\n", enabled);
+    enabled = ID3D11Multithread_SetMultithreadProtected(d3d11_multithread, TRUE);
+    ok(!enabled, "Previous multithread protection is %#x.\n", enabled);
+    enabled = ID3D10Multithread_GetMultithreadProtected(multithread);
+    ok(enabled, "Multithread protection is %#x.\n", enabled);
 
     ID3D11Device_Release(d3d11_device);
     ID3D11DeviceContext_Release(immediate_context);

@@ -1715,12 +1715,6 @@ void server_init_process( struct thread_data *data )
     {
         if (arch && !strcmp( arch, "win32" ))
             fatal_error( "WINEARCH set to win32 but '%s' is a 64-bit installation.\n", config_dir );
-#ifndef _WIN64
-        data->teb->GdiBatchCount = PtrToUlong( (char *)data->teb - teb_offset );
-        data->teb->WowTebOffset  = -teb_offset;
-        wow_peb = (PEB64 *)((char *)peb - page_size);
-#endif
-
         if (supported_machines_count > 2 &&
             supported_machines[supported_machines_count - 1] == supported_machines[supported_machines_count - 2])
         {
@@ -1758,31 +1752,34 @@ void server_init_process_done(void)
         chdir( "/" );
     close( initial_cwd );
 
-    if ((exename = ntdll_wcsrchr( main_wargv[0], '\\' ))) exename++;
-    else exename = main_wargv[0];
-
-    /* CROSSOVER HACK: bug 3853 */
+    if (main_wargv && main_wargv[0])
     {
-        static const WCHAR explorerexeW[] = {'e','x','p','l','o','r','e','r','.','e','x','e',0};
-        const char *child_pipe = getenv("WINE_WAIT_CHILD_PIPE");
-        const char *ignore_child = getenv("WINE_WAIT_CHILD_PIPE_IGNORE");
-        if (child_pipe)
+        if ((exename = ntdll_wcsrchr( main_wargv[0], '\\' ))) exename++;
+        else exename = main_wargv[0];
+
+        /* CROSSOVER HACK: bug 3853 */
         {
-            if (!ntdll_wcsicmp( exename, explorerexeW ))
+            static const WCHAR explorerexeW[] = {'e','x','p','l','o','r','e','r','.','e','x','e',0};
+            const char *child_pipe = getenv("WINE_WAIT_CHILD_PIPE");
+            const char *ignore_child = getenv("WINE_WAIT_CHILD_PIPE_IGNORE");
+            if (child_pipe)
             {
-                int fd = atoi(child_pipe);
-                if (fd) close( fd );
-                unsetenv("WINE_WAIT_CHILD_PIPE");
-            }
-            else if (ignore_child)
-            {
-                WCHAR ignore[MAX_PATH];
-                ntdll_umbstowcs( ignore_child, strlen(ignore_child) + 1, ignore, MAX_PATH );
-                if (!ntdll_wcsicmp( exename, ignore ))
+                if (!ntdll_wcsicmp( exename, explorerexeW ))
                 {
                     int fd = atoi(child_pipe);
                     if (fd) close( fd );
                     unsetenv("WINE_WAIT_CHILD_PIPE");
+                }
+                else if (ignore_child)
+                {
+                    WCHAR ignore[MAX_PATH];
+                    ntdll_umbstowcs( ignore_child, strlen(ignore_child) + 1, ignore, MAX_PATH );
+                    if (!ntdll_wcsicmp( exename, ignore ))
+                    {
+                        int fd = atoi(child_pipe);
+                        if (fd) close( fd );
+                        unsetenv("WINE_WAIT_CHILD_PIPE");
+                    }
                 }
             }
         }

@@ -4019,18 +4019,14 @@ void macdrv_set_view_backing_size(WineContentView *view, const int backing_size[
 }
 
 /* CW HACK 22435 */
-void *macdrv_get_view_d3dmetal_client_surface(macdrv_view v)
+void *macdrv_get_view_d3dmetal_client_surface(WineContentView *view)
 {
-    WineContentView* view = (WineContentView*)v;
-
     if ([view isKindOfClass:[WineContentView class]])
         return view->d3dmetal_client_surface;
     return NULL;
 }
-void macdrv_set_view_d3dmetal_client_surface(macdrv_view v, void *client_surface)
+void macdrv_set_view_d3dmetal_client_surface(WineContentView *view, void *client_surface)
 {
-    WineContentView* view = (WineContentView*)v;
-
     if ([view isKindOfClass:[WineContentView class]])
         view->d3dmetal_client_surface = client_surface;
 }
