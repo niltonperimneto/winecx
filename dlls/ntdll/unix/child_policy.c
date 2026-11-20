@@ -52,6 +52,7 @@ struct policy_match
     char *backend;
     BOOL game_mode;
     BOOL has_game_mode;
+    char *game_mode_bundle_loader;
     char **keys;
     char **values;
     size_t env_count;
@@ -203,28 +204,34 @@ static BOOL parse_bool( struct json_cursor *cursor, BOOL *value )
     return FALSE;
 }
 
-static void normalize_identity( char *value )
+static BOOL normalize_identity( char **path )
 {
-    char *ptr, *src, *dst;
+    char *value, *ptr, *src, *dst;
+
+    /* A drive letter can expand to "/drive_x". Leave room for that prefix
+     * even when the input string was allocated at its exact length. */
+    if (!(value = realloc( *path, strlen( *path ) + 7 ))) return FALSE;
+    *path = value;
     for (ptr = value; *ptr; ptr++)
     {
         if (*ptr == '\\') *ptr = '/';
         else *ptr = tolower( (unsigned char)*ptr );
     }
 
-    src = value;
-    if (!strncmp( src, "//??/", 5 )) src += 5;
-    dst = value;
+    src = dst = value;
+    if (!strncmp( src, "//?" "?/", 5 )) src += 5;
+    else if (!strncmp( src, "/?" "?/", 4 )) src += 4;
     if (isalpha( (unsigned char)src[0] ) && src[1] == ':' && src[2] == '/')
     {
-        *dst++ = '/';
-        if (src[0] != 'z')
-        {
-            memcpy( dst, "drive_", 6 );
-            dst += 6;
-            *dst++ = src[0];
-        }
+        char drive = src[0];
         src += 2;
+        if (drive != 'z')
+        {
+            memmove( value + 8, src, strlen( src ) + 1 );
+            memcpy( value, "/drive_", 7 );
+            value[7] = drive;
+            src = dst = value + 8;
+        }
     }
     while (*src)
     {
@@ -233,6 +240,7 @@ static void normalize_identity( char *value )
     }
     while (dst > value + 1 && dst[-1] == '/') dst--;
     *dst = 0;
+    return TRUE;
 }
 
 static const char *base_name( const char *path )
@@ -268,7 +276,7 @@ static BOOL string_array_matches( struct json_cursor *cursor, const char *image_
     {
         expected = parse_string( cursor );
         if (!expected) return FALSE;
-        normalize_identity( expected );
+        if (!normalize_identity( &expected )) { free( expected ); return FALSE; }
         if (!strcmp( expected, basename_only ? base_name( image_path ) : image_path )) matched = TRUE;
         free( expected );
         if (consume( cursor, ']' )) return matched;
@@ -288,7 +296,7 @@ static BOOL string_array_contains_path( struct json_cursor *cursor, const char *
     {
         expected = parse_string( cursor );
         if (!expected) return FALSE;
-        normalize_identity( expected );
+        if (!normalize_identity( &expected )) { free( expected ); return FALSE; }
         len = strlen( expected );
         if (len && !strncmp( expected, image_path, len ) && (image_path[len] == '/' || !image_path[len])) matched = TRUE;
         free( expected );
@@ -434,6 +442,7 @@ static void free_match( struct policy_match *match )
     free( match->values );
     free( match->policy_id );
     free( match->backend );
+    free( match->game_mode_bundle_loader );
     memset( match, 0, sizeof(*match) );
 }
 
@@ -443,6 +452,7 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
     char *key;
     unsigned int policy_app_id;
     BOOL path_match = FALSE, name_match = FALSE, app_id_match = FALSE, install_root_match = FALSE;
+    BOOL has_app_id = FALSE;
 
     if (!consume( cursor, '{' )) return FALSE;
     if (consume( cursor, '}' )) return TRUE;
@@ -468,6 +478,7 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
         }
         else if (!strcmp( key, "steamAppID" ) && parse_uint( cursor, &policy_app_id ))
         {
+            has_app_id = TRUE;
             if (steam_app_id && policy_app_id == steam_app_id) app_id_match = TRUE;
         }
         else if (!strcmp( key, "executablePaths" ))
@@ -486,6 +497,12 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
         {
             if (!parse_environment( cursor, match )) { free( key ); return FALSE; }
         }
+        else if (!strcmp( key, "gameModeBundleLoader" ))
+        {
+            free( match->game_mode_bundle_loader );
+            match->game_mode_bundle_loader = parse_string( cursor );
+            if (!match->game_mode_bundle_loader) { free( key ); return FALSE; }
+        }
         else if (!strcmp( key, "gameMode" ))
         {
             match->has_game_mode = parse_bool( cursor, &match->game_mode );
@@ -499,6 +516,14 @@ static BOOL parse_policy( struct json_cursor *cursor, const char *image_path,
         free( key );
         if (consume( cursor, '}' )) break;
         if (!consume( cursor, ',' )) return FALSE;
+    }
+
+    if (match->game_mode && (!has_app_id || !app_id_match || !path_match ||
+                             weak_name_is_excluded( base_name( image_path ) )))
+    {
+        /* App ID alone identifies a launch session, including its helpers. */
+        match->game_mode = FALSE;
+        if (!match->env_count && !match->backend) return TRUE;
     }
 
     if (app_id_match)
@@ -626,6 +651,31 @@ static char *read_policy_file( const char *path, size_t *size )
     return data;
 }
 
+BOOL whisky_matches_game_mode_target( const char *image_path )
+{
+    const char *targets = getenv( "WHISKY_GAME_MODE_TARGETS" ), *end;
+    char *normalized, *target;
+    BOOL matched = FALSE;
+
+    if (!targets || !*targets || !image_path || !*image_path) return FALSE;
+    if (!(normalized = strdup( image_path ))) return FALSE;
+    if (!normalize_identity( &normalized )) { free( normalized ); return FALSE; }
+    if (!weak_name_is_excluded( base_name( normalized ) ))
+    {
+        do
+        {
+            end = strchr( targets, '\n' );
+            if (!(target = end ? strndup( targets, end - targets ) : strdup( targets ))) break;
+            if (!normalize_identity( &target )) { free( target ); break; }
+            matched = !strcmp( target, normalized );
+            free( target );
+            if (end) targets = end + 1;
+        } while (end && !matched);
+    }
+    free( normalized );
+    return matched;
+}
+
 void whisky_apply_child_launch_policy( const char *image_path, const WCHAR *environment )
 {
     struct policy_match match = {0};
@@ -633,16 +683,25 @@ void whisky_apply_child_launch_policy( const char *image_path, const WCHAR *envi
     char *data, *normalized_image;
     size_t size, i;
 
+    /* This runs in the newly forked child before it execs its loader. */
+    unsetenv( "WHISKY_GAME_MODE_REQUESTED" );
+    unsetenv( "WHISKY_GAME_MODE_HOST_ACTIVE" );
+    unsetenv( "WHISKY_GAME_MODE_HOST_PID" );
+    if (!getenv( "WHISKY_GAME_MODE_TARGETS" )) unsetenv( "WHISKY_GAME_MODE_BUNDLE_LOADER" );
     if (!path || !*path || !image_path || !*image_path) return;
     if (!(data = read_policy_file( path, &size ))) return;
     if (!(normalized_image = strdup( image_path ))) { free( data ); return; }
-    normalize_identity( normalized_image );
+    if (!normalize_identity( &normalized_image )) { free( normalized_image ); free( data ); return; }
 
     if (find_matching_policy( data, size, normalized_image, environment, &match ))
     {
         for (i = 0; i < match.env_count; i++) setenv( match.keys[i], match.values[i], 1 );
-        if (match.has_game_mode && match.game_mode) setenv( "WHISKY_GAME_MODE_REQUESTED", "1", 1 );
-        else unsetenv( "WHISKY_GAME_MODE_REQUESTED" );
+        if (match.has_game_mode && match.game_mode)
+        {
+            setenv( "WHISKY_GAME_MODE_REQUESTED", "1", 1 );
+            if (match.game_mode_bundle_loader && match.game_mode_bundle_loader[0] == '/')
+                setenv( "WHISKY_GAME_MODE_BUNDLE_LOADER", match.game_mode_bundle_loader, 1 );
+        }
         WARN( "WHISKY_CHILD_POLICY result=environment-applied policy=%s match=%s image=%s backend=%s game-mode=%s\n",
               debugstr_a(match.policy_id ? match.policy_id : "unknown"), match.match_kind,
               debugstr_a(normalized_image), match.backend ? match.backend : "unknown",
