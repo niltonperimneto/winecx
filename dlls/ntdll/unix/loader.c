@@ -406,8 +406,14 @@ static void set_config_dir(void)
 static void init_paths(void)
 {
     Dl_info info;
+    const char *identity_dir = getenv( "WHISKY_GAME_MODE_NTDLL_DIR" );
 
-    if (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname )))
+    /* The signed game bundle carries a private ntdll copy. Its Wine data,
+     * libraries and wineserver still live in the selected runtime. */
+    if (identity_dir && identity_dir[0] == '/' && getenv( "WHISKY_GAME_MODE_HOST_PID" ))
+        ntdll_dir = realpath( identity_dir, NULL );
+    unsetenv( "WHISKY_GAME_MODE_NTDLL_DIR" );
+    if (!ntdll_dir && (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname ))))
         fatal_error( "cannot get path to ntdll.so\n" );
 
     if ((build_dir = remove_tail( ntdll_dir, "/dlls/ntdll" )))
@@ -664,33 +670,61 @@ static void replace_wineloader_path_with_link(char **wineloader_path, const char
 #endif
 
 
-static void game_mode_host_exec( char **argv )
+static void game_mode_host_exec( char **argv, const char *image_path )
 {
 #ifdef __APPLE__
     const char *configured = getenv( "WHISKY_GAME_MODE_HOST" );
-    const char *slash;
-    char *derived = NULL, **host_argv;
+    char *derived = NULL, *bundle_loader = NULL, **host_argv;
+#ifndef HAVE_WINE_PRELOADER
+    const char *bundle_path;
+#endif
     unsigned int argc, i;
 
-    if (!getenv( "WHISKY_GAME_MODE_REQUESTED" ) || getenv( "WHISKY_GAME_MODE_HOST_ACTIVE" )) return;
-    if (!configured || !*configured)
+    /* An unavailable alternate loader must fall through to Wine's usual fallback. */
+    if (access( argv[0], X_OK )) return;
+    if (getenv( "WHISKY_GAME_MODE_HOST_ACTIVE" )) return;
+    if (!getenv( "WHISKY_GAME_MODE_REQUESTED" ) && !whisky_matches_game_mode_target( image_path )) return;
+    unsetenv( "WHISKY_GAME_MODE_TARGETS" );
+    unsetenv( "WHISKY_GAME_MODE_REQUESTED" );
+
+    /* Resolve from the installed runtime, independent of Dock identity aliases. */
+    if (!configured || configured[0] != '/')
     {
-        if (!(slash = strrchr( argv[0], '/' ))) return;
-        if (asprintf( &derived, "%.*s/../libexec/GameModeProcessHost.app/Contents/MacOS/GameModeProcessHost",
-                      (int)(slash - argv[0]), argv[0] ) == -1) return;
-        configured = derived;
+        if (bin_dir && bin_dir[0] == '/' &&
+            asprintf( &derived, "%s/../libexec/GameModeProcessHost.app/Contents/MacOS/GameModeProcessHost",
+                      bin_dir ) != -1)
+            configured = derived;
+        else configured = NULL;
     }
-    if (access( configured, X_OK )) { free( derived ); return; }
+    if (!configured || access( configured, X_OK ))
+    {
+        fprintf( stderr, "WHISKY_CHILD_POLICY result=host-unavailable\n" );
+        free( derived );
+        return;
+    }
 
     for (argc = 0; argv[argc]; argc++);
     if (!(host_argv = malloc( (argc + 2) * sizeof(*host_argv) ))) { free( derived ); return; }
     host_argv[0] = (char *)configured;
     for (i = 0; i <= argc; i++) host_argv[i + 1] = argv[i];
+#ifndef HAVE_WINE_PRELOADER
+    /* Keep the game category on the executable that owns the actual window. */
+    bundle_path = getenv( "WHISKY_GAME_MODE_BUNDLE_LOADER" );
+    if (bundle_path && bundle_path[0] == '/' && !access( bundle_path, X_OK ) &&
+        (bundle_loader = strdup( bundle_path )))
+    {
+        host_argv[1] = bundle_loader;
+        setenv( "WHISKY_GAME_MODE_NTDLL_DIR", ntdll_dir, 1 );
+    }
+#endif
+    unsetenv( "WHISKY_GAME_MODE_BUNDLE_LOADER" );
     setenv( "WHISKY_GAME_MODE_HOST_ACTIVE", "1", 1 );
     execv( configured, host_argv );
+    fprintf( stderr, "WHISKY_CHILD_POLICY result=host-failed error=%d\n", errno );
     unsetenv( "WHISKY_GAME_MODE_HOST_ACTIVE" );
-    WARN( "WHISKY_CHILD_POLICY result=host-failed error=%d\n", errno );
+    unsetenv( "WHISKY_GAME_MODE_NTDLL_DIR" );
     free( host_argv );
+    free( bundle_loader );
     free( derived );
 #endif
 }
@@ -707,7 +741,7 @@ static void preloader_exec( char **argv, const char *image_path )
          * which will show up as the icon name in the Dock. */
         replace_wineloader_path_with_link( &(argv[0]), image_path );
 
-        game_mode_host_exec( argv );
+        game_mode_host_exec( argv, image_path );
 
         posix_spawnattr_init( &attr );
         posix_spawnattr_setflags( &attr, POSIX_SPAWN_SETEXEC | _POSIX_SPAWN_DISABLE_ASLR );
@@ -729,7 +763,7 @@ static void preloader_exec( char **argv, const char *image_path )
         replace_wineloader_path_with_link( &(argv[1]), image_path );
 #endif
 
-    game_mode_host_exec( argv + 1 );
+    game_mode_host_exec( argv + 1, image_path );
     execv( argv[1], argv + 1 );
 }
 
@@ -2439,11 +2473,15 @@ static int pre_exec(void)
 
 static void reexec_loader( int argc, char *argv[], char *extra_arg )
 {
+    const char *game_mode_image = NULL;
     WORD machine = current_machine;
     char **new_argv;
 
-    /* have to exec if we have a preloader, or an argument, or if we are the initial wrapper */
-    if (!pre_exec() && !extra_arg && dlsym( RTLD_DEFAULT, "wine_main_preload_info" )) return;
+    if (!extra_arg && argc > 1 && whisky_matches_game_mode_target( argv[1] ))
+        game_mode_image = argv[1];
+
+    /* A direct Game Mode target must hand off even on the no-preloader fast path. */
+    if (!pre_exec() && !extra_arg && !game_mode_image && dlsym( RTLD_DEFAULT, "wine_main_preload_info" )) return;
 
     if (extra_arg)
     {
@@ -2460,7 +2498,7 @@ static void reexec_loader( int argc, char *argv[], char *extra_arg )
     /* default to 32-bit loader to support 32-bit prefixes */
     if (machine == IMAGE_FILE_MACHINE_AMD64) machine = IMAGE_FILE_MACHINE_I386;
 
-    loader_exec( new_argv, machine, argv[0] );
+    loader_exec( new_argv, machine, game_mode_image ? game_mode_image : argv[0] );
     fatal_error( "could not exec the wine loader\n" );
 }
 
